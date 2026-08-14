@@ -15,7 +15,7 @@ import { FolderColor } from '@/lib/types';
 
 // "Border" thickness for the ghost "Add new note" tile (see
 // addNoteTileOuter/Inner below).
-const GHOST_BORDER = 3;
+const GHOST_BORDER = 2;
 
 export default function FolderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>(); // folder id from the URL
@@ -163,7 +163,7 @@ export default function FolderScreen() {
             // unconfirmed. Mid-grey (#999999) is dark enough to be left alone
             // by that heuristic while still reading as light/neutral.
             <Pressable
-              style={[styles.addNoteTileOuter, { backgroundColor: '#999999' }]}
+              style={[styles.addNoteTileOuter, { backgroundColor: '#999999E6' }]}
               onPress={handleCreateNote}>
               <View style={[styles.addNoteTileInner, { backgroundColor: '#212225' }]}>
                 <ThemedText type="smallBold" style={{ color: theme.text }}>

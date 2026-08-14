@@ -2,7 +2,7 @@
 // any unsorted notes waiting to be filed into a category.
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { NoteRow } from '@/components/note-row';
@@ -14,23 +14,15 @@ import { useTheme } from '@/hooks/use-theme';
 import { autoInkForColor, withAlpha } from '@/lib/appearance';
 import { Folder, FolderColor } from '@/lib/types';
 
-// Sentinel ids for the non-folder cells appended to the grid: the two
-// always-visible "add" tiles, and an invisible filler used only when the
-// last tile would otherwise land alone in the final row (see below).
+// Sentinel id for the always-visible "add category" tile appended to the grid.
 const ADD_CATEGORY_TILE_ID = '__add-category-tile__';
-const ADD_NOTE_TILE_ID = '__add-note-tile__';
-const SPACER_ID = '__grid-spacer__';
 
-// "Border" thickness for the ghost tiles (see ghostOuter/ghostInner below).
-const GHOST_BORDER = 3;
+// "Border" thickness for the ghost tiles (see ghostInner below).
+const GHOST_BORDER = 2;
 
-// A grid cell is either a real folder or one of the sentinels above, tagged
+// A grid cell is either a real folder or the add-category sentinel, tagged
 // with `kind` so renderItem can branch on it without ambiguity.
-type GridItem =
-  | (Folder & { kind: 'folder' })
-  | { id: string; kind: 'add-category' }
-  | { id: string; kind: 'add-note' }
-  | { id: string; kind: 'spacer' };
+type GridItem = (Folder & { kind: 'folder' }) | { id: string; kind: 'add-category' };
 
 export default function FoldersScreen() {
   const router = useRouter();
@@ -40,6 +32,13 @@ export default function FoldersScreen() {
   // "add" tiles' border/text: white in dark mode, dark in light mode, so it's
   // always visible (a fixed black border would vanish on the dark theme).
   const theme = useTheme();
+  // Exact per-card width in px, computed from the real screen width instead
+  // of a percentage: a percentage + a fixed-px gap never quite add up to
+  // 100% (the leftover slack piles up on one side, since the row's default
+  // alignment is flex-start) — this guarantees both columns are the same
+  // size and both outer margins match, on any screen width.
+  const { width: screenWidth } = useWindowDimensions();
+  const cardWidth = (screenWidth - Spacing.three * 2 - Spacing.three) / 2;
   // Local UI state for the inline add panel: whether it's open, and its draft fields.
   const [isAdding, setIsAdding] = useState(false);
   const [name, setName] = useState('');
@@ -76,22 +75,15 @@ export default function FoldersScreen() {
   }
 
   const unsorted = uncategorizedNotes();
-  // Tint the "Add new category" tile with the first folder's color, so it
-  // visually echoes "Category 1" (the seeded default). Falls back to the same
-  // emerald used to seed it, in case every folder has since been deleted.
-  const firstFolderColor = folders[0]?.color ?? '#46B67F';
 
-  // Grid data: every folder, then the two "add" tiles, always last in that
-  // order. FlatList's numColumns pairs items two-per-row in order; when that
-  // would leave the last tile alone in the final row (RN stretches a lone
-  // flex item to fill the row), append an invisible spacer to keep it
-  // half-width instead.
-  const countWithTiles = folders.length + 2;
+  // Grid data: every folder, then the "add category" tile, always last.
+  // Each cell has a fixed % width (see folderCard) rather than flex:1, so a
+  // lone trailing item — like this tile when the folder count is even — stays
+  // half-width on its own instead of needing an invisible sibling to pair
+  // with (RN's numColumns does not backfill a short last row).
   const gridData: GridItem[] = [
     ...folders.map((f) => ({ ...f, kind: 'folder' as const })),
     { id: ADD_CATEGORY_TILE_ID, kind: 'add-category' as const },
-    { id: ADD_NOTE_TILE_ID, kind: 'add-note' as const },
-    ...(countWithTiles % 2 !== 0 ? [{ id: SPACER_ID, kind: 'spacer' as const }] : []),
   ];
 
   return (
@@ -135,9 +127,10 @@ export default function FoldersScreen() {
           </ThemedView>
         )}
 
-        {/* Folder grid, two per row, followed by the "add" tiles. Below the
-            grid (as the FlatList footer, so it isn't split into columns), any
-            unsorted notes waiting to be filed into a category. */}
+        {/* Folder grid, two per row, followed by the "add category" tile.
+            Below the grid (as the FlatList footer, so it isn't split into
+            columns): the "Unsorted" section — an always-visible, full-width
+            "Add new note" tile, then any unsorted notes below it. */}
         <FlatList
           data={gridData}
           keyExtractor={(item) => item.id}
@@ -145,7 +138,6 @@ export default function FoldersScreen() {
           columnWrapperStyle={styles.row}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => {
-            if (item.kind === 'spacer') return <View style={styles.spacer} />;
             if (item.kind === 'add-category') {
               return (
                 // "Border" built from two stacked solid fills (outer = grey,
@@ -158,33 +150,14 @@ export default function FoldersScreen() {
                 // unconfirmed. Mid-grey (#999999) is dark enough to be left
                 // alone by that heuristic while still reading as light/neutral.
                 <Pressable
-                  style={[styles.folderCard, styles.ghostOuter, { backgroundColor: '#999999' }]}
+                  style={[styles.folderCard, styles.ghostOuter, { width: cardWidth, backgroundColor: '#999999E6' }]}
                   onPress={() => setIsAdding(true)}>
-                  <View style={[styles.ghostInner, { backgroundColor: '#212225' }]}>
-                    {/* "+" and label match the first folder's color (falls back
-                        to the same emerald used for the seeded "Category 1"
-                        if the list is ever empty). */}
-                    <ThemedText type="subtitle" style={{ color: firstFolderColor }}>
-                      +
-                    </ThemedText>
-                    <ThemedText type="small" style={{ color: firstFolderColor }}>
-                      Add new category
-                    </ThemedText>
-                  </View>
-                </Pressable>
-              );
-            }
-            if (item.kind === 'add-note') {
-              return (
-                <Pressable
-                  style={[styles.folderCard, styles.ghostOuter, { backgroundColor: '#999999' }]}
-                  onPress={handleCreateUnsortedNote}>
                   <View style={[styles.ghostInner, { backgroundColor: '#212225' }]}>
                     <ThemedText type="subtitle" style={{ color: theme.text }}>
                       +
                     </ThemedText>
                     <ThemedText type="small" style={{ color: theme.text }}>
-                      Add new note
+                      Add new category
                     </ThemedText>
                   </View>
                 </Pressable>
@@ -196,7 +169,7 @@ export default function FoldersScreen() {
             const count = notesInFolder(item.id).length;
             return (
               <Pressable
-                style={[styles.folderCard, { backgroundColor: item.color }]}
+                style={[styles.folderCard, { width: cardWidth, backgroundColor: item.color }]}
                 onPress={() => router.push(`/folder/${item.id}`)}>
                 <ThemedText type="default" style={[styles.folderName, { color: ink }]}>
                   {item.name}
@@ -208,21 +181,33 @@ export default function FoldersScreen() {
             );
           }}
           ListFooterComponent={
-            unsorted.length > 0 ? (
-              <View style={styles.unsortedSection}>
-                <ThemedText type="smallBold" themeColor="textSecondary" style={styles.unsortedLabel}>
-                  Unsorted
-                </ThemedText>
-                {unsorted.map((n) => (
-                  <NoteRow
-                    key={n.id}
-                    note={n}
-                    onPress={() => router.push(`/note/${n.id}`)}
-                    onLongPress={() => handleUnsortedNoteOptions(n.id)}
-                  />
-                ))}
-              </View>
-            ) : null
+            <View style={styles.unsortedSection}>
+              <ThemedText type="smallBold" themeColor="textSecondary" style={styles.unsortedLabel}>
+                Unsorted notes
+              </ThemedText>
+              {/* Full-width ghost tile, same shape as a note row — always
+                  visible here, above any existing unsorted notes. */}
+              <Pressable
+                style={[styles.unsortedAddOuter, { backgroundColor: '#999999E6' }]}
+                onPress={handleCreateUnsortedNote}>
+                <View style={[styles.unsortedAddInner, { backgroundColor: '#212225' }]}>
+                  <ThemedText type="smallBold" style={{ color: theme.text }}>
+                    +
+                  </ThemedText>
+                  <ThemedText type="small" style={{ color: theme.text }}>
+                    Add new note
+                  </ThemedText>
+                </View>
+              </Pressable>
+              {unsorted.map((n) => (
+                <NoteRow
+                  key={n.id}
+                  note={n}
+                  onPress={() => router.push(`/note/${n.id}`)}
+                  onLongPress={() => handleUnsortedNoteOptions(n.id)}
+                />
+              ))}
+            </View>
           }
         />
       </SafeAreaView>
@@ -237,8 +222,14 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, paddingHorizontal: Spacing.three },
   list: { paddingTop: Spacing.three, paddingBottom: Spacing.six, gap: Spacing.three },
   row: { gap: Spacing.three },
+  // Width is set inline per-render (see cardWidth above), computed in px from
+  // the real screen width — not flex:1 (its rendered width depends on what
+  // else shares its row, and can drift when a sibling has different internal
+  // padding) and not a % (never quite adds up to 100% alongside a fixed-px
+  // gap, leaving uneven slack on one side). A fixed px width sidesteps both:
+  // every card is the same size whether paired with another card or sitting
+  // alone as the last, odd one out, with symmetric margins on any screen.
   folderCard: {
-    flex: 1,
     minHeight: 110,
     borderRadius: Spacing.three,
     padding: Spacing.three,
@@ -250,26 +241,22 @@ const styles = StyleSheet.create({
   // Ghost tile "border": two stacked solid-color views instead of
   // borderWidth/borderColor. RN's native border rendering (border + rounded
   // corners + a fill) looked inconsistently washed-out/transparent on
-  // Android across several attempts; a padded outer view filled with a solid
-  // color, containing a slightly-inset inner view filled with the card color,
-  // can't render as "transparent" — it's just two opaque rectangles.
-  // The inner radius is outer radius minus the padding (border thickness), so
-  // the ring reads as an even width all the way around, corners included —
-  // a mismatched inner radius is what made a thinner version of this look
-  // uneven/"off" at the corners.
+  // Android across several attempts; a padded outer fill containing a
+  // slightly-inset inner view filled with the card color can't render as
+  // "transparent" — it's just two opaque rectangles. Now that folderCard has
+  // a fixed width (see above) rather than flex:1, this tile's own padding no
+  // longer needs to match a real folder card's — a fixed-width box is the
+  // same size regardless of its own padding, so ghostOuter can safely differ.
   ghostOuter: {
     padding: GHOST_BORDER, // border thickness
   },
   ghostInner: {
     flex: 1,
-    borderRadius: Spacing.three - GHOST_BORDER, // matches folderCard's outer radius
+    borderRadius: Spacing.three - GHOST_BORDER, // inner radius = outer radius minus border thickness, so the ring is even at the corners
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.one,
   },
-  // Invisible filler that only exists to keep a lone trailing tile at
-  // half-width instead of stretching to fill the row (see gridData above).
-  spacer: { flex: 1 },
   addPanel: { borderRadius: Spacing.three, padding: Spacing.three, marginBottom: Spacing.three, gap: Spacing.three },
   // "Unsorted" notes footer, below the folder grid.
   unsortedSection: { marginTop: Spacing.two, gap: Spacing.two },
@@ -293,4 +280,17 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
   },
   saveButtonText: { color: '#fff', fontWeight: '700' },
+  // "Add new note" ghost tile in the Unsorted section: same two-layer solid-
+  // fill "border" technique as ghostOuter/ghostInner, but sized like a
+  // NoteRow (full width) instead of a square-ish folder card.
+  unsortedAddOuter: {
+    borderRadius: Spacing.two,
+    padding: GHOST_BORDER,
+  },
+  unsortedAddInner: {
+    borderRadius: Spacing.two - GHOST_BORDER,
+    padding: Spacing.three,
+    gap: Spacing.half,
+    alignItems: 'center',
+  },
 });
