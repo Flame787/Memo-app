@@ -18,6 +18,41 @@ not just the author.
   data storage (no backend for now).
 - Being tested on Android (author's phone) via Expo Go.
 
+## Status update (2026-08-14)
+
+- Added **per-note backgrounds**: each note can use a pastel solid color or a
+  template image (from `assets/templates/`) as its background, chosen via a 🎨 panel
+  in the editor.
+- Added **auto-contrast text**: the note's text color adapts to the background so it
+  stays readable (light background → dark text, dark background → light text), using
+  WCAG luminance/contrast math. Users can also override the text color manually.
+- New modules: `src/lib/appearance.ts` (palette + contrast) and `src/lib/templates.ts`
+  (loads the manifest + bundled images). Each template's dark/light nature is
+  precomputed at build time and stored as `isDark` in `templates.json`.
+- Refreshed the **folder color palette** to a curated set, and folder-card text now
+  auto-contrasts too (same helper as notes), so any tone stays readable.
+- **App language is English.** All user-facing strings are English (hardcoded — no
+  i18n library yet). If multiple languages are ever needed, switch to an i18n setup
+  (e.g. i18next + expo-localization) rather than hardcoded strings.
+
+## Status update (2026-08-15)
+
+- **Folders are now editable after creation:** the header "⋯" menu got an **Edit**
+  action opening a rename/recolor panel (same visual language as "new category").
+  Store gained `updateFolder(id, patch)`, replacing the never-wired-up `renameFolder`.
+- **Folder palette doubled to 16 colors** (was 8), still shared from one place
+  (`FOLDER_COLORS` in `constants/theme.ts`) so the create and edit pickers can't drift.
+- **Fixed a real bug:** the folder list's note-preview cards ignored a manually chosen
+  text color when the note had no background (color/template) — the override was only
+  applied when a background was present, so "White" and "Dark" looked identical on a
+  plain note. Fixed by checking for a manual `textColor` in addition to a background.
+- **Switched all template image rendering to `expo-image`** (`npx expo install
+  expo-image`), replacing core `Image`/`ImageBackground`. Cause: template thumbnails
+  in the picker intermittently rendered blank until tapped — a known reliability class
+  for RN's core `Image` on Android under frequent re-renders. `expo-image` is Expo's
+  recommended component for exactly this; used consistently in the note editor, the
+  folder preview cards, and the picker thumbnails.
+
 ## User requirements (as stated, refined)
 
 ### 1. Categorization (must-have, in the skeleton)
@@ -34,8 +69,10 @@ not just the author.
 - Every folder and every note within it should be **customizable**: colors and background
   "templates".
   - In the skeleton: a folder has a color choice from 8 preset tones (cards in a grid, color = card background).
-  - Still missing: color/background customization at the level of an individual note, and a real "template"
-    background system (not just color) — for the next iteration.
+  - **Done (2026-08-14):** per-note background — pastel solid color **or** a template image — plus
+    auto-contrasting text color (see Status update above). The chosen background is now also mirrored
+    on the note's preview card in the folder list.
+  - Still missing: a richer "template" system beyond a flat image (patterns/layouts).
 - Simple to use, a **low learning curve** for new users — a priority over "power user"
   features. Every new feature should be checked through that filter before being added.
 
@@ -64,6 +101,8 @@ not just the author.
 ### 7. Background template gallery (free + paid)
 - An **in-app gallery of background templates** the user can apply as the background of an individual note
   (extends the per-note customization already flagged as missing under #3).
+  - **Done (2026-08-14):** applying a template image (or a pastel color) as a note background works, sourced
+    from the bundled free templates. Still to do: the **free/paid split** and the purchase flow below.
 - Monetization: **some templates free, some paid**. This introduces in-app purchases as a new concern —
   candidate: RevenueCat (or `expo-in-app-purchases`); needs App Store / Play Store billing setup and a way
   to track which templates a user has unlocked.
@@ -179,25 +218,88 @@ Downloads or a separate source folder); only the compressed version goes into
   which point the repo holds none of them. (Ties into the storage-cost check before
   any recurring-download feature.)
 
+## Status update (2026-08-15, part 2)
+
+- **Folder color-picker selection ring is theme-aware** (`theme.text` instead of a
+  hardcoded black border) — same fix as the text-color bug: a fixed color that only
+  reads correctly in one theme.
+- **First-launch seed content:** a fresh install starts with one folder ("Category 1",
+  emerald) containing one welcome note. Seeding is gated by a dedicated one-time
+  `memo.seeded` flag (`storage.ts`), **not** "folders/notes are empty" — otherwise
+  deleting everything later would bring the welcome content back unexpectedly.
+- **Home screen grid rework:** the floating "+ New category" button is gone, replaced
+  by two always-visible, thick-outlined ghost tiles appended after the real folders —
+  **"Add new category"** and **"Add new note"** — sized and positioned like the folder
+  cards (a spacer cell keeps a lone trailing tile from stretching full-width, a known
+  `numColumns` FlatList quirk). The add-category panel now opens **above** the grid
+  instead of at the bottom of the screen, so the keyboard no longer covers the name
+  field/color picker.
+- **Unsorted notes:** `Note.folderId` is now optional — a note can exist with no
+  folder ("Add new note" on the home screen creates one). They're listed in an
+  "Unsorted" section below the folder grid; long-press offers "Move to \<folder\>" or
+  Delete. **Scope decision:** true drag-and-drop was requested as the eventual goal,
+  but was not built — it's a substantial gesture-handling effort with real mobile UX
+  risk, and the app already has an established long-press → move pattern for exactly
+  this (folder note lists work the same way). Implemented the simpler, consistent
+  equivalent instead; real drag gestures remain an option if this isn't enough.
+- **Shared `NoteRow` component** (`components/note-row.tsx`): the note-preview-row
+  rendering (title, content preview, background, auto-contrast text) was duplicated
+  between the folder screen and the new unsorted-notes list, so it was extracted once
+  both call sites existed — reuse, not premature abstraction.
+- **Folder screen:** the floating "+ New note" button is gone too, replaced by a
+  full-width outlined "Add new note" tile as the list's `ListFooterComponent`.
+- **Per-note timestamps:** every note now shows `Created: DD:MM:YY` and
+  `Edited: DD:MM:YY HH:MM` in a persistent footer (doesn't scroll away with the
+  content), colored to match the note's auto-contrast text.
+
+## Known issue: `theme.text`/`theme.backgroundElement` invisible on one device (unresolved)
+
+On the author's Android phone (native, Expo Go), the three "add" ghost tiles (home
+screen's "Add new category"/"Add new note", folder screen's "Add new note") were
+invisible when styled with `theme.text` / `theme.backgroundElement` as inline
+`backgroundColor` — despite those same theme values rendering correctly everywhere
+else in the app (default text, panel cards, etc.), and despite the source values
+being correct (`Colors.dark.text = '#ffffff'`). Confirmed with a debug test: swapping
+in hardcoded neon colors (`#FF00FF`/`#00FFFF`) rendered immediately, ruling out a
+layout/zero-size issue — it's specifically about those two theme values in this
+`backgroundColor` context, on that device. Root cause not found.
+
+**Current workaround:** those three tiles use hardcoded literal hex colors —
+`#5B7FE0` (the app's brand blue, already used on FAB/Save buttons) for the border,
+`#212225` for the inner card fill — instead of `theme.text` / `theme.backgroundElement`.
+White itself (both via `theme.text` and as a hardcoded `#FFFFFF` literal) stayed
+invisible on the author's device even after that debug test; blue was picked because
+it's a color already proven visible elsewhere in the app, not because the underlying
+cause was found.
+**Known trade-off:** hardcoding means these three tiles are dark-mode-only — they'll
+look wrong in light mode until this is properly root-caused and fixed. Revisit if it
+recurs elsewhere, or if light-mode support is ever prioritized.
+
 ## Project structure (current)
 
 ```
 Memo/
   src/
     app/
-      _layout.tsx        # root Stack + NotesStoreProvider
-      index.tsx           # folder list (grid, colors, + new category)
-      folder/[id].tsx      # note list in a folder, + new note, move/delete
-      note/[id].tsx        # editor (title + content), autosave, move, delete
-    hooks/
-      use-notes-store.tsx  # React Context: CRUD for folders/notes + persistence
-    lib/
-      types.ts             # Folder, Note types
-      storage.ts            # AsyncStorage read/write helpers
+      _layout.tsx           # root Stack + NotesStoreProvider
+      index.tsx              # folder grid (add-category/add-note tiles) + unsorted notes
+      folder/[id].tsx         # note list in a folder, rename/recolor, add-note tile, move/delete
+      note/[id].tsx           # editor: title/content, autosave, background/text-color picker, timestamps
     components/
+      note-row.tsx            # shared note preview row (folder list + unsorted list)
       themed-text.tsx, themed-view.tsx   # from the starter template, kept for light/dark theming
-    constants/theme.ts       # colors, spacing, from the starter template
-  Plan.md                    # this file
+    hooks/
+      use-notes-store.tsx      # React Context: CRUD for folders/notes + persistence + first-launch seed
+      use-theme.ts, use-color-scheme(.web).ts
+    lib/
+      types.ts                 # Folder, Note types
+      storage.ts                # AsyncStorage read/write + one-time seeded flag
+      appearance.ts              # pastel palette, contrast/luminance helpers
+      templates.ts                # background template manifest + static image requires
+    constants/theme.ts           # colors, spacing, FOLDER_COLORS palette (16 colors)
+  assets/templates/                # bundled background template images + templates.json manifest
+  scripts/compress-images.py       # image compression helper (see Image asset optimization)
+  Plan.md                          # this file
 ```
 
 ## Next steps (for the next session)
@@ -214,3 +316,6 @@ Memo/
 8. Consider migrating from AsyncStorage to SQLite before the number of notes/folders grows significantly
    (also more relevant now that notes carry image/attachment references).
 9. Calendar integration (deliberately deferred, not to be done before the points above).
+10. If the long-press "move to folder" flow for unsorted notes isn't enough, consider real
+    drag-and-drop (`react-native-gesture-handler` + `react-native-reanimated` are already
+    dependencies, so the groundwork exists — this would still be new, non-trivial UI work).

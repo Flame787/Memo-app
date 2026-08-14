@@ -4,7 +4,7 @@
 // is a single source of truth.
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 
-import { loadFolders, loadNotes, saveFolders, saveNotes } from '@/lib/storage';
+import { hasSeeded, loadFolders, loadNotes, markSeeded, saveFolders, saveNotes } from '@/lib/storage';
 import { Folder, FolderColor, Note } from '@/lib/types';
 
 // Generate a compact, collision-resistant id: base36 timestamp + random suffix.
@@ -21,11 +21,20 @@ type NotesStore = {
   folders: Folder[];
   notes: Note[];
   createFolder: (name: string, color: FolderColor) => Folder;
-  renameFolder: (id: string, name: string) => void;
+  // Patch a folder's name and/or color (e.g. editing it after creation).
+  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name' | 'color'>>) => void;
   deleteFolder: (id: string) => void;
   notesInFolder: (folderId: string) => Note[];
-  createNote: (folderId: string) => Note;
-  updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'content'>>) => void;
+  // Notes with no folder yet, most-recently-updated first.
+  uncategorizedNotes: () => Note[];
+  // Omit folderId (or pass undefined) to create an unsorted note.
+  createNote: (folderId?: string) => Note;
+  updateNote: (
+    id: string,
+    // Editable fields: text and appearance. Passing a field as `undefined`
+    // clears it (used to switch a note between color/template/no background).
+    patch: Partial<Pick<Note, 'title' | 'content' | 'backgroundColor' | 'backgroundTemplateId' | 'textColor'>>,
+  ) => void;
   deleteNote: (id: string) => void;
   moveNote: (id: string, folderId: string) => void;
   getNote: (id: string) => Note | undefined;
@@ -45,11 +54,37 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
   const hasLoaded = useRef(false);
 
   // On mount: read folders and notes in parallel, then open the save gate.
+  // On the very first launch ever (seeded flag not set), skip the empty
+  // loaded data and seed one welcome category + note instead, so the app
+  // isn't blank out of the box. The seed only ever runs once: the flag stays
+  // set even if the user later deletes everything, so a cleared app stays
+  // empty rather than getting the welcome content back.
   useEffect(() => {
     (async () => {
-      const [loadedFolders, loadedNotes] = await Promise.all([loadFolders(), loadNotes()]);
-      setFolders(loadedFolders);
-      setNotes(loadedNotes);
+      const [loadedFolders, loadedNotes, seeded] = await Promise.all([loadFolders(), loadNotes(), hasSeeded()]);
+      if (seeded) {
+        setFolders(loadedFolders);
+        setNotes(loadedNotes);
+      } else {
+        const folder: Folder = {
+          id: makeId(),
+          name: 'Category 1',
+          color: '#46B67F', // emerald — same swatch as in the color picker
+          createdAt: Date.now(),
+        };
+        const note: Note = {
+          id: makeId(),
+          folderId: folder.id,
+          title: 'Hello!',
+          content:
+            'Welcome to the app. This is a first note. You can edit text, edit background template, or delete this note and create new ones.',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        setFolders([folder]);
+        setNotes([note]);
+        await markSeeded();
+      }
       hasLoaded.current = true;
       setLoading(false);
     })();
@@ -77,8 +112,8 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
       setFolders((prev) => [...prev, folder]);
       return folder;
     },
-    renameFolder: (id, name) => {
-      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)));
+    updateFolder: (id, patch) => {
+      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
     },
     // Deleting a folder also removes every note inside it (no orphaned notes).
     deleteFolder: (id) => {
@@ -87,7 +122,8 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
     },
     // Notes for one folder, most-recently-updated first.
     notesInFolder: (folderId) => notes.filter((n) => n.folderId === folderId).sort((a, b) => b.updatedAt - a.updatedAt),
-    // Create an empty note in a folder; title/content are filled in on the note screen.
+    uncategorizedNotes: () => notes.filter((n) => !n.folderId).sort((a, b) => b.updatedAt - a.updatedAt),
+    // Create an empty note, in a folder or unsorted; title/content are filled in on the note screen.
     createNote: (folderId) => {
       const note: Note = {
         id: makeId(),
@@ -100,7 +136,7 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
       setNotes((prev) => [...prev, note]);
       return note;
     },
-    // Patch title and/or content; always refresh updatedAt so ordering reflects the edit.
+    // Patch text and/or appearance fields; always refresh updatedAt so ordering reflects the edit.
     updateNote: (id, patch) => {
       setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch, updatedAt: Date.now() } : n)));
     },

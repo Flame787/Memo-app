@@ -9,6 +9,7 @@ import { Folder, Note } from '@/lib/types';
 // Storage keys are namespaced with `memo.` to avoid clashing with other keys.
 const FOLDERS_KEY = 'memo.folders';
 const NOTES_KEY = 'memo.notes';
+const SEEDED_KEY = 'memo.seeded';
 
 // Read all folders; returns an empty list on first run (nothing stored yet).
 export async function loadFolders(): Promise<Folder[]> {
@@ -30,4 +31,16 @@ export async function loadNotes(): Promise<Note[]> {
 // Overwrite the stored note list with the current in-memory state.
 export async function saveNotes(notes: Note[]): Promise<void> {
   await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+}
+
+// Whether the one-time first-launch welcome content has already been created.
+// This is tracked as its own flag rather than inferred from "folders/notes are
+// empty" — otherwise deleting everything later would bring the welcome
+// category back on the next launch, which would be surprising.
+export async function hasSeeded(): Promise<boolean> {
+  return (await AsyncStorage.getItem(SEEDED_KEY)) === 'true';
+}
+
+export async function markSeeded(): Promise<void> {
+  await AsyncStorage.setItem(SEEDED_KEY, 'true');
 }
