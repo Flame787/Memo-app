@@ -1,0 +1,48 @@
+{
+  "templates": [
+    {
+      "id": "unsplash-drazen-nesic-eNbN61kv06s",
+      "file": "drazen-nesic-eNbN61kv06s-unsplash.jpg",
+      "tier": "free",
+      "source": "Unsplash",
+      "sourceUrl": "https://unsplash.com/photos/eNbN61kv06s",
+      "author": "Dražen Nešić",
+      "authorUrl": "",
+      "license": "Unsplash License",
+      "licenseUrl": "https://unsplash.com/license"
+    },
+    {
+      "id": "unsplash-kristaps-ungurs-uLZUavKaDRw",
+      "file": "kristaps-ungurs-uLZUavKaDRw-unsplash.jpg",
+      "tier": "free",
+      "source": "Unsplash",
+      "sourceUrl": "https://unsplash.com/photos/uLZUavKaDRw",
+      "author": "Kristaps Ungurs",
+      "authorUrl": "",
+      "license": "Unsplash License",
+      "licenseUrl": "https://unsplash.com/license"
+    },
+    {
+      "id": "unsplash-smithsonian-k1OoIILF9yo",
+      "file": "smithsonian-k1OoIILF9yo-unsplash.jpg",
+      "tier": "free",
+      "source": "Unsplash",
+      "sourceUrl": "https://unsplash.com/photos/k1OoIILF9yo",
+      "author": "Smithsonian",
+      "authorUrl": "",
+      "license": "Unsplash License",
+      "licenseUrl": "https://unsplash.com/license"
+    },
+    {
+      "id": "unsplash-dawid-zawila-hbUh0mnK7Tw",
+      "file": "dawid-zawila-hbUh0mnK7Tw-unsplash.jpg",
+      "tier": "free",
+      "source": "Unsplash",
+      "sourceUrl": "https://unsplash.com/photos/hbUh0mnK7Tw",
+      "author": "Dawid Zawiła",
+      "authorUrl": "",
+      "license": "Unsplash License",
+      "licenseUrl": "https://unsplash.com/license"
+    }
+  ]
+}

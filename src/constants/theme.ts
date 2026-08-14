@@ -24,6 +24,8 @@ export const Colors = {
   },
 } as const;
 
+// Union of valid color names, so `useTheme()[name]` is type-checked against the
+// palette. Requires each name to exist in both light and dark.
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 export const Fonts = Platform.select({
@@ -51,6 +53,8 @@ export const Fonts = Platform.select({
   },
 });
 
+// Shared spacing/radius scale (in px). Screens reference these named steps
+// instead of hard-coded numbers so padding, gaps, and radii stay consistent.
 export const Spacing = {
   half: 2,
   one: 4,
@@ -61,5 +65,7 @@ export const Spacing = {
   six: 64,
 } as const;
 
+// Extra bottom padding to clear the OS tab bar / home indicator, per platform.
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
+// Cap layout width on large/web screens so content stays readable.
 export const MaxContentWidth = 800;

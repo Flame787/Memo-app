@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Notea",
-    "slug": "Notea",
+    "name": "Memo",
+    "slug": "Memo",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "notea",
+    "scheme": "memo",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
