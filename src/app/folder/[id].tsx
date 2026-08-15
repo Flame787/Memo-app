@@ -11,6 +11,7 @@ import { ThemedView } from '@/components/themed-view';
 import { FOLDER_COLORS, Spacing } from '@/constants/theme';
 import { useNotesStore } from '@/hooks/use-notes-store';
 import { useTheme } from '@/hooks/use-theme';
+import { useThemePreference } from '@/hooks/use-theme-preference';
 import { FolderColor } from '@/lib/types';
 
 // "Border" thickness for the ghost "Add new note" tile (see
@@ -23,6 +24,11 @@ export default function FolderScreen() {
   const { folders, getFolder, notesInFolder, createNote, deleteNote, moveNote, deleteFolder, updateFolder } =
     useNotesStore();
   const theme = useTheme(); // for the default (no-background) note text colors
+  const { scheme } = useThemePreference();
+  // See the matching comment in app/index.tsx: this workaround is only valid
+  // for dark mode (where theme.backgroundElement was confirmed invisible on
+  // the author's device) — in light mode, use the real theme color.
+  const ghostFill = scheme === 'dark' ? '#212225' : theme.backgroundElement;
   const folder = getFolder(id); // may be undefined if the folder was just deleted
   const notes = notesInFolder(id); // already sorted most-recent-first by the store
 
@@ -165,7 +171,7 @@ export default function FolderScreen() {
             <Pressable
               style={[styles.addNoteTileOuter, { backgroundColor: '#999999E6' }]}
               onPress={handleCreateNote}>
-              <View style={[styles.addNoteTileInner, { backgroundColor: '#212225' }]}>
+              <View style={[styles.addNoteTileInner, { backgroundColor: ghostFill }]}>
                 <ThemedText type="smallBold" style={{ color: theme.text }}>
                   +
                 </ThemedText>

@@ -1,6 +1,6 @@
 // Home screen: a two-column grid of folders (plus "add" tiles) and, below it,
 // any unsorted notes waiting to be filed into a category.
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,6 +11,7 @@ import { ThemedView } from '@/components/themed-view';
 import { FOLDER_COLORS, Spacing } from '@/constants/theme';
 import { useNotesStore } from '@/hooks/use-notes-store';
 import { useTheme } from '@/hooks/use-theme';
+import { useThemePreference } from '@/hooks/use-theme-preference';
 import { autoInkForColor, withAlpha } from '@/lib/appearance';
 import { Folder, FolderColor } from '@/lib/types';
 
@@ -32,6 +33,18 @@ export default function FoldersScreen() {
   // "add" tiles' border/text: white in dark mode, dark in light mode, so it's
   // always visible (a fixed black border would vanish on the dark theme).
   const theme = useTheme();
+  const { scheme, setScheme } = useThemePreference();
+  // The ghost tiles' fill was hardcoded near-black (see the comment at their
+  // usage below) because `theme.backgroundElement` rendered invisible in dark
+  // mode on the author's device — likely Android/MIUI "Force Dark" auto-
+  // remapping near-white colors specifically when the system is in dark mode
+  // (see Plan.md §8). That workaround only makes sense *for* dark mode: in
+  // light mode there's no reason to expect the same failure (the light
+  // palette's `backgroundElement` isn't a near-white value being auto-
+  // darkened), and keeping it hardcoded there would put theme.text's black
+  // "+"/label text on a permanently near-black tile — invisible. So the
+  // workaround only applies when the resolved scheme is actually dark.
+  const ghostFill = scheme === 'dark' ? '#212225' : theme.backgroundElement;
   // Exact per-card width in px, computed from the real screen width instead
   // of a percentage: a percentage + a fixed-px gap never quite add up to
   // 100% (the leftover slack piles up on one side, since the row's default
@@ -88,6 +101,25 @@ export default function FoldersScreen() {
 
   return (
     <ThemedView style={styles.container}>
+      {/* Dark/light picker (REQ-10): both icons always visible, the active
+          one full-opacity and the other dimmed, so the current mode is
+          obvious at a glance. Tapping either sets that mode directly (not a
+          flip) — the first tap turns today's OS-following behavior into a
+          persisted manual choice, see use-theme-preference.tsx for why. */}
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <View style={styles.themePicker}>
+              <Pressable onPress={() => setScheme('light')} hitSlop={10}>
+                <ThemedText style={[styles.themeIcon, { opacity: scheme === 'light' ? 1 : 0.35 }]}>☀️</ThemedText>
+              </Pressable>
+              <Pressable onPress={() => setScheme('dark')} hitSlop={10}>
+                <ThemedText style={[styles.themeIcon, { opacity: scheme === 'dark' ? 1 : 0.35 }]}>🌙</ThemedText>
+              </Pressable>
+            </View>
+          ),
+        }}
+      />
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
         {/* Add-category panel, opened by tapping the grid tile. Placed above
             the grid (rather than at the bottom of the screen) so the on-screen
@@ -152,7 +184,7 @@ export default function FoldersScreen() {
                 <Pressable
                   style={[styles.folderCard, styles.ghostOuter, { width: cardWidth, backgroundColor: '#999999E6' }]}
                   onPress={() => setIsAdding(true)}>
-                  <View style={[styles.ghostInner, { backgroundColor: '#212225' }]}>
+                  <View style={[styles.ghostInner, { backgroundColor: ghostFill }]}>
                     <ThemedText type="subtitle" style={{ color: theme.text }}>
                       +
                     </ThemedText>
@@ -190,7 +222,7 @@ export default function FoldersScreen() {
               <Pressable
                 style={[styles.unsortedAddOuter, { backgroundColor: '#999999E6' }]}
                 onPress={handleCreateUnsortedNote}>
-                <View style={[styles.unsortedAddInner, { backgroundColor: '#212225' }]}>
+                <View style={[styles.unsortedAddInner, { backgroundColor: ghostFill }]}>
                   <ThemedText type="smallBold" style={{ color: theme.text }}>
                     +
                   </ThemedText>
@@ -219,6 +251,13 @@ export default function FoldersScreen() {
 // consistent across screens.
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  themePicker: { flexDirection: 'row', gap: Spacing.three, alignItems: 'center' },
+  // Bigger than the default 16px text size — a header icon that small is a
+  // real tap-accuracy problem on a phone; hitSlop alone doesn't grow the
+  // visible/perceived target, which is what actually matters for finding it
+  // by eye. Larger gap (Spacing.three, up from two) keeps the two enlarged
+  // tap targets' hitSlop zones from overlapping.
+  themeIcon: { fontSize: 26 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.three },
   list: { paddingTop: Spacing.three, paddingBottom: Spacing.six, gap: Spacing.three },
   row: { gap: Spacing.three },

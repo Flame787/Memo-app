@@ -4,13 +4,13 @@
  */
 
 import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useThemePreference } from '@/hooks/use-theme-preference';
 
-// Returns the active color palette (an object of named colors) for the current
-// scheme. Anything null/undefined falls back to the light palette.
+// Returns the active color palette (an object of named colors) for the
+// current scheme. The scheme itself comes from useThemePreference (REQ-10):
+// the OS setting until the user manually toggles it, their explicit choice
+// after that.
 export function useTheme() {
-  const scheme = useColorScheme();
-  const theme = scheme === 'dark' ? 'dark' : 'light';
-
-  return Colors[theme];
+  const { scheme } = useThemePreference();
+  return Colors[scheme];
 }

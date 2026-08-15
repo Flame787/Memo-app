@@ -105,7 +105,7 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-07 | Background template gallery | Should | 🔴 Partially done (see bullets) |
 | REQ-08 | Note template types | Must | 🔴 Planned |
 | REQ-09 | Search | Must/Could | 🔴 Planned (text) / Deferred (voice) |
-| REQ-10 | Dark/light mode toggle | Should | 🔴 Planned |
+| REQ-10 | Dark/light mode toggle | Should | ✅ Done |
 | REQ-11 | Custom photo backgrounds | Should | 🔴 Planned |
 | REQ-12 | AI assistant | Could | 🔴 Deferred |
 | REQ-13 | Voice-to-text dictation | Could | 🔴 Deferred |
@@ -114,8 +114,8 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-16 | Calendar | Must | 🔴 Planned |
 | REQ-17 | Alarms/notifications | Should | 🔴 Planned |
 
-**Next up:** the Phase A SQLite migration (§9) — the shared prerequisite that
-REQ-08, REQ-11, and REQ-16 all independently need before they can start.
+**Next up:** Phase A is done; Phase B is underway (REQ-10 shipped) — REQ-08 (note
+template types) is the suggested next Phase B item, see §9.
 
 ### ✅ REQ-01 — Categorization (folders)
 **Priority:** Must · **Status:** Done
@@ -234,16 +234,35 @@ Deferred (voice — D-03)
   string, search needs to look inside that structure — another reason this follows
   the template system, not precedes it.
 
-### 🔴 REQ-10 — Dark mode / light mode toggle
-**Priority:** Should · **Status:** Planned (Phase B)
-- A manual toggle on the homepage.
-- **First launch:** defaults to the phone's current system theme — the plumbing
-  already exists (`useColorScheme()`, wired into `hooks/use-color-scheme.ts`).
-- After that, the user's explicit choice **overrides and persists** until changed
-  again — stop following system theme changes once picked manually.
-- **Ties into the unresolved theme-color bug** (§8): a light-mode toggle will
-  immediately expose it, since three tiles are currently hardcoded dark-mode-only
-  as a workaround. Worth root-causing before this ships.
+### ✅ REQ-10 — Dark mode / light mode toggle
+**Priority:** Should · **Status:** Done (2026-08-15, parts 4–5)
+- A manual picker on the homepage header: **☀️ and 🌙 icons both always
+  visible**, side by side. The currently-active mode's icon is full opacity,
+  the other is dimmed (35% opacity) — so the current mode is visible at a
+  glance, not just after tapping. Tapping either icon sets that mode directly
+  (not a flip/toggle).
+- **First launch:** defaults to the phone's current system theme.
+- After that, the user's explicit choice **overrides and persists** (SQLite
+  `meta` table) until changed again — stops following system theme changes once
+  picked manually.
+- **Implementation:** new `src/hooks/use-theme-preference.tsx`
+  (`ThemePreferenceProvider`/`useThemePreference()`, exposing `scheme` and
+  `setScheme(value)`) is the single source of truth for the resolved scheme;
+  `use-theme.ts` and `_layout.tsx`'s React Navigation `ThemeProvider` both read
+  from it now instead of calling `useColorScheme()` directly, so screen content
+  and navigation chrome (headers/backgrounds) never disagree. Persistence via
+  two new `storage.ts` functions (`getThemeOverride`/`setThemeOverride`),
+  reusing the `meta` table from Phase A rather than adding a new AsyncStorage
+  key.
+- **Also fixed while shipping this:** the three "add" ghost tiles' hardcoded
+  near-black fill (§8's workaround) was dark-mode-only — switching to light mode
+  would have put black text on a permanently near-black tile. Now
+  scheme-conditional: hardcoded fill only in dark mode (where it's confirmed
+  necessary), the real `theme.backgroundElement` in light mode.
+- **Confirmed the §8 Force Dark bug while testing this** (see §8, "CONFIRMED
+  2026-08-15") — the toggle initially looked non-functional (app stayed dark
+  regardless of selection) until MIUI's per-app dark-mode override for Expo Go
+  was disabled, which fixed it. Not a bug in this feature; a device/OS setting.
 
 ### 🔴 REQ-11 — Custom photo backgrounds per note
 **Priority:** Should · **Status:** Planned (Phase B)
@@ -404,12 +423,13 @@ Useful to a large number of everyday users, not just the author — design with 
 audience in mind (simplicity > complexity); avoid niche/power-user decisions too
 early. (Originally listed as REQ-04.)
 
-### 🔴 NFR-03 — Performance & storage scalability
-AsyncStorage (whole-array JSON under two keys) does not scale once note/folder
-counts grow — each save overwrites the entire array, no relational queries. Three
-separate requirements now depend on fixing this (REQ-08, REQ-11, REQ-16) — see
-Phase A, §9. Replacement: **SQLite** (`expo-sqlite`) with real tables and FK
-relations.
+### ✅ NFR-03 — Performance & storage scalability
+**Fixed 2026-08-15 (Phase A):** AsyncStorage (whole-array JSON under two keys) did
+not scale once note/folder counts grew — each save overwrote the entire array, no
+relational queries. Migrated to **SQLite** (`expo-sqlite`) with real `folders`/
+`notes` tables and an `ON DELETE CASCADE` foreign key; every mutation now writes
+only the one row that changed. REQ-08, REQ-11, and REQ-16 depended on this and can
+now proceed — see §9 and §11.
 
 ### 🔴 NFR-04 — Security & privacy
 - Passwords hashed server-side (bcrypt/argon2) once REQ-15 exists; never a
@@ -613,27 +633,95 @@ entirely: host on cloud storage/CDN, download at runtime.
 
 ## 8. Known Issues
 
-### `theme.text` / `theme.backgroundElement` invisible on one device (unresolved)
-On the author's Android phone (native, Expo Go), the three "add" ghost tiles (home
-screen's "Add new category"/"Add new note", folder screen's "Add new note") were
-invisible when styled with `theme.text` / `theme.backgroundElement` as inline
-`backgroundColor` — despite those same theme values rendering correctly everywhere
-else in the app, and despite the source values being correct
-(`Colors.dark.text = '#ffffff'`). Confirmed with a debug test: hardcoded neon colors
-(`#FF00FF`/`#00FFFF`) rendered immediately, ruling out a layout/zero-size issue —
-it's specifically about those two theme values in this `backgroundColor` context, on
-that device. Root cause not found.
+### Android system-level dark-mode color remapping (CONFIRMED 2026-08-15 — workaround found, permanent fix still needs a dev build)
 
-**Current workaround:** those three tiles use hardcoded literal hex colors —
-`#5B7FE0` (the app's brand blue, already used on FAB/Save buttons) for the border,
-`#212225` for the inner card fill — instead of the theme values. White itself (via
-`theme.text` and as a hardcoded `#FFFFFF` literal) stayed invisible on the author's
-device even after the debug test; blue was picked because it's already proven
-visible elsewhere in the app, not because the underlying cause was found.
+**Confirmed 2026-08-15, part 5:** turning off MIUI's per-app "Dark mode" override
+for **Expo Go** (Settings → Apps → Manage apps → Expo Go → Dark mode → off) fixes
+it. Before disabling it, REQ-10's new manual toggle had no visible effect at all —
+the app stayed rendered as dark regardless of which mode was selected in-app. After
+disabling it, both light and dark mode render correctly and distinctly. This
+confirms the hypothesis below: the OS was overriding colors independently of
+whatever Memo's own code (or the user's in-app choice) set — it wasn't a
+light/dark-*specific* color bug, it was the OS overriding the app's rendering
+outright, which is also why REQ-10's toggle looked broken until this was found.
 
-**Known trade-off:** these three tiles are dark-mode-only until this is properly
-root-caused — directly relevant to REQ-10 (dark/light toggle), which will expose
-this immediately. Revisit if it recurs elsewhere, or when REQ-10 is scheduled.
+**Practical takeaway:** this is a **per-installation phone setting, not something
+the app enforces** — anyone else running Memo through their own Expo Go (or the
+author on a different/factory-reset phone) will hit the same thing until they also
+turn it off, and a dev build (see below) makes this permanent instead of a manual
+step. Worth mentioning near first launch once REQ-10 ships more broadly, or at
+minimum keeping this entry as the pointer.
+
+Three separate symptoms on the author's phone (a Redmi/MIUI Android device, native,
+via Expo Go) turned out to be **one underlying cause**, not three unrelated bugs:
+
+Three separate symptoms on the author's phone (a Redmi/MIUI Android device, native,
+via Expo Go) now look like **one underlying cause**, not three unrelated bugs:
+
+1. **(original, unresolved)** the three "add" ghost tiles (home screen's "Add new
+   category"/"Add new note", folder screen's "Add new note") were invisible when
+   styled with `theme.text` / `theme.backgroundElement` as inline `backgroundColor`
+   — despite those same theme values rendering correctly everywhere else, and
+   despite the source values being correct (`Colors.dark.text = '#ffffff'`).
+   Hardcoded neon colors (`#FF00FF`/`#00FFFF`) rendered immediately, ruling out a
+   layout/zero-size issue.
+2. **(new, 2026-08-15)** a note's manual **text color** override (REQ-03's picker):
+   "Dark" (`#1A1A1A`) and "White" (`#FFFFFF`) render as visibly different colors
+   when the system is in **light** mode, but **both render as white text when the
+   system is in dark mode.** Code was checked and ruled out as the cause: the
+   `TextInput`'s `color` style is set from `resolveNoteTextColor()`
+   (`src/lib/appearance.ts`), which returns the manual override unconditionally
+   before any auto-contrast/theme logic runs, and the inline
+   `{ color: textColor }` style is last in the array (correctly wins over
+   `styles.titleInput`/`styles.contentInput`, which don't set `color` at all). The
+   value React Native hands to the native `TextInput` is genuinely `#1A1A1A` either
+   way — something *after* that is changing what actually renders.
+3. **(new, 2026-08-15)** the note **background** color picker (`PASTEL_COLORS` in
+   `src/lib/appearance.ts`) is a single fixed array of 8 light pastel hex values,
+   rendered identically regardless of theme (`note/[id].tsx` has no light/dark
+   branch for it) — yet in practice, only light pastel tones are visibly available
+   when the system is in light mode, and only dark tones when the system is in dark
+   mode. Same pattern: one fixed set of colors in the code, two different visible
+   results depending on system theme.
+
+**Confirmed cause: Android's OS-level automatic dark-mode color remapping
+("Force Dark"), which MIUI (the author's phone is a Redmi) applies more
+aggressively than stock Android — and, per-app, to the Expo Go binary itself while
+testing this way, not to "Memo" (which isn't its own installed app yet).** This
+feature re-colors views at the native
+rendering layer — independent of whatever color React Native/JS explicitly set —
+to keep an app looking "appropriately dark" when the system is in dark mode: it can
+push a near-black text color toward white, and a light background color toward
+dark, exactly matching all three symptoms above (light↔dark auto-inversion, only
+when system dark mode is active, on this specific OEM skin). This is consistent
+with why hardcoded neon colors in symptom 1 were unaffected — Force Dark's
+heuristics target colors it judges as "too light" or "too dark" relative to the
+system theme, not arbitrary hues.
+
+**Why this can't be fixed in code right now:** the standard fix is
+`android:forceDarkAllowed="false"` in the app's native Android theme
+(`styles.xml`), which requires the app to control its own compiled native shell.
+The project currently runs inside **Expo Go**, a pre-built binary Google/Expo ships
+— its native theme can't be edited per-project. This is only fixable once the
+project has its own custom **EAS development build** (already anticipated for
+voice recognition and in-app purchases, NFR-07) — a **third**, independent reason
+that transition will eventually be needed. Once on a dev build, a small Expo config
+plugin (`@expo/config-plugins`' `withAndroidStyles`, or `expo-build-properties` if
+it exposes the attribute directly) can inject that theme override.
+
+**Confirmed workaround (no code, no dev build needed):** on MIUI, **Settings →
+Apps → Manage apps → Expo Go → Dark mode → off** (found under a "More dark mode
+options"-style submenu on some MIUI versions rather than directly on the app's
+info page). Needed once per phone/Expo Go install; every tester/dev on MIUI
+hitting "dark mode doesn't seem to work at all" should check this first before
+assuming a code bug.
+
+**Known trade-off / blast radius:** symptom 1's three "add" tiles still use a
+scheme-conditional hardcoded fill rather than the theme color directly in dark
+mode (see REQ-10's entry) — safe to leave as-is since it's now understood *why*,
+but revisit once the dev-build fix below makes it unnecessary. The permanent,
+zero-manual-steps fix (`android:forceDarkAllowed="false"` baked into the app's own
+native theme) still needs the eventual EAS development build — see below.
 
 ## 9. Implementation Roadmap
 
@@ -652,18 +740,21 @@ this immediately. Revisit if it recurs elsewhere, or when REQ-10 is scheduled.
 
 ### Priority order for the 2026-08-15 feature backlog (D-09)
 
-9. 🔴 **Phase A — SQLite migration first, as shared infrastructure. ← NEXT UP.**
-   Move off AsyncStorage's whole-array model before building REQ-08, REQ-11, or
-   REQ-16 — all three independently need relational, queryable storage. Doing this
-   once now avoids shipping three separate workarounds for the same limitation.
-   Not started.
-10. 🔴 **Phase B — local-only features, after Phase A and before auth.** Note
-    template types (REQ-08, including Kanban's swipe interaction), custom gallery
-    photo backgrounds (REQ-11), the calendar (REQ-16, multi-tag dates + public
-    holidays), and daily-schedule alarms (REQ-17, including the repeat-daily prompt
-    and the Alarms screen). None of these need a backend. Search's text part
-    (REQ-09) and the dark/light mode toggle (REQ-10) are self-contained and can
-    slot in anywhere within this phase. Not started.
+9. ✅ **Phase A — SQLite migration, as shared infrastructure. Done 2026-08-15.**
+   Moved off AsyncStorage's whole-array model before building REQ-08, REQ-11, or
+   REQ-16 — all three independently needed relational, queryable storage. See §11
+   for what shipped (`src/lib/db.ts`, rewritten `src/lib/storage.ts`, rewritten
+   `use-notes-store.tsx`) — a one-time migration copies any existing
+   AsyncStorage data into SQLite on first run after the update, then stops using
+   the old keys.
+10. 🔴 **Phase B — local-only features, after Phase A and before auth. ←
+    IN PROGRESS.** Note template types (REQ-08, including Kanban's swipe
+    interaction), custom gallery photo backgrounds (REQ-11), the calendar
+    (REQ-16, multi-tag dates + public holidays), and daily-schedule alarms
+    (REQ-17, including the repeat-daily prompt and the Alarms screen). None of
+    these need a backend. ✅ REQ-10 (dark/light mode toggle) is done — see §11.
+    Suggest REQ-08 (note template types) next, since REQ-09's search and
+    REQ-16's note-linking both build on top of it.
 11. 🔴 **Phase C — authentication + cloud data sync (REQ-15), last, as its own
     project phase.** The largest architectural change in this document: backend
     choice (Supabase vs Firebase), hashed-password auth, secure token storage, and
@@ -763,6 +854,77 @@ Memo/
   outlined "Add new note" tile as the list footer.
 - **Per-note timestamps:** every note shows `Created: DD:MM:YY` and
   `Edited: DD:MM:YY HH:MM` in a persistent footer.
+
+### 2026-08-15, part 3 — Phase A: SQLite migration (NFR-03)
+- Installed `expo-sqlite` (`npx expo install expo-sqlite`) — SDK-aligned, works in
+  Expo Go (unlike the voice/IAP native modules discussed elsewhere in this
+  document), so no development-build switch was needed for this step.
+- **New `src/lib/db.ts`:** opens one shared SQLite connection (`memo.db`), creates
+  `folders` and `notes` tables plus a small `meta` key/value table (first-launch
+  seed flag, migration-done flag), and enables `PRAGMA foreign_keys = ON` so
+  `notes.folder_id REFERENCES folders(id) ON DELETE CASCADE` actually cascades —
+  deleting a folder now deletes its notes at the database level, not via manual
+  application code.
+- **One-time AsyncStorage → SQLite migration**, also in `db.ts`: on first run after
+  this update, reads the old `memo.folders`/`memo.notes`/`memo.seeded`
+  AsyncStorage keys (if present), copies every row into SQLite inside a single
+  transaction (all-or-nothing, so a crash mid-migration can't leave half the data
+  copied), then deletes the old AsyncStorage keys. Gated by a `meta` flag so it
+  only ever runs once per install. Existing notes/folders on the author's phone are
+  expected to carry over automatically the next time the app opens.
+- **Rewrote `src/lib/storage.ts`:** was "load the whole array" / "save the whole
+  array" over AsyncStorage; now row-level CRUD over SQLite
+  (`getAllFolders`/`insertFolder`/`updateFolderRow`/`deleteFolderRow` and the note
+  equivalents), with small row↔type mapping functions to bridge SQLite's
+  snake_case/NULL-based columns and the app's camelCase/`undefined`-based `Folder`/
+  `Note` types.
+- **Rewrote `src/hooks/use-notes-store.tsx`:** removed the two "persist the whole
+  array on every change" `useEffect`s; every mutator (`createFolder`, `updateNote`,
+  `moveNote`, etc.) now updates React state immediately and fires the matching
+  single-row SQLite write in the background (logged, not awaited) — optimistic
+  local update, same UX as before, but a save now touches one row instead of
+  re-serializing every folder/note. The public `useNotesStore()` API is unchanged,
+  so no screen code needed to change.
+- **Verification done:** `npx tsc --noEmit` passes clean. **Not yet done:**
+  real on-device testing in Expo Go (needed to confirm the AsyncStorage migration
+  actually carries over the author's existing notes, not just that it compiles) —
+  flagged as the immediate next step before building on top of this.
+
+### 2026-08-15, part 4 — Phase B: dark/light mode toggle (REQ-10)
+- Diagnosed two more color-rendering reports (manual note text color and the
+  pastel background picker both collapsing to one visual result per system
+  theme) as almost certainly the same root cause already logged in §8 — Android/
+  MIUI's automatic dark-mode color remapping — not a code bug; confirmed by code
+  review (the manual-override and palette code paths are theme-independent) and
+  by the symptom pattern (identical in light mode, collapsed only in dark mode).
+  Attempted the MIUI per-app "Dark mode" override for Expo Go as a no-code test;
+  inconclusive from the author's report, so REQ-10 was built regardless — see §8
+  for the full diagnostic writeup and current status.
+- Implemented REQ-10 (see that entry for what shipped): new
+  `use-theme-preference.tsx`, `use-theme.ts` and `_layout.tsx` rewired to read
+  the resolved scheme from it, a header toggle button on the home screen, and
+  persistence via two new `storage.ts` functions over the existing `meta` table.
+- Fixed a light-mode regression this exposed immediately: the three "add" ghost
+  tiles' hardcoded near-black fill would have shown black-on-black text once
+  light mode became reachable. Made the fill scheme-conditional (hardcoded only
+  in dark mode, real theme color in light mode) in `index.tsx` and
+  `folder/[id].tsx`.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 5 — Force Dark confirmed; dark/light picker redesigned
+- **Confirmed the §8 root cause:** disabling MIUI's per-app "Dark mode" override
+  for Expo Go fixed both mode rendering and REQ-10's toggle, which had looked
+  non-functional up to that point (app stayed dark regardless of the in-app
+  selection). Updated §8 from "hypothesis" to "confirmed," with the exact
+  setting path and the practical takeaway that it's a per-installation phone
+  setting, not something the app can enforce short of a dev build.
+- **Redesigned REQ-10's UI** per feedback: was a single icon that flipped
+  between ☀️/🌙 on tap; now both icons are always visible side by side, the
+  active one full-opacity and the other dimmed, so the current mode reads at a
+  glance instead of only being inferable from which icon is currently shown.
+  Tapping either icon sets that mode directly. `useThemePreference()`'s API
+  changed from `toggle()` to `setScheme(value)` to match.
+- Verified with `npx tsc --noEmit` (clean).
 
 ### 2026-08-15 — planning session (this URS conversion)
 - Captured a large batch of new requirements (REQ-08–REQ-17) covering note template
