@@ -14,6 +14,7 @@
 // surprising than a rare, logged miss for a local single-user app.
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
+import { makeId } from '@/lib/id';
 import {
   deleteFolderRow,
   deleteNoteRow,
@@ -23,16 +24,11 @@ import {
   insertFolder,
   insertNote,
   markSeeded,
+  replaceChecklistItems,
   updateFolderRow,
   updateNoteRow,
 } from '@/lib/storage';
-import { Folder, FolderColor, Note } from '@/lib/types';
-
-// Generate a compact, collision-resistant id: base36 timestamp + random suffix.
-// Good enough for a local, single-device app (no server coordination needed).
-function makeId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-}
+import { ChecklistItem, Folder, FolderColor, Note } from '@/lib/types';
 
 // Fire-and-forget a persistence call: log if it fails, but never throw into
 // the caller (a mutator's UI-facing return value already went out).
@@ -58,10 +54,16 @@ type NotesStore = {
   createNote: (folderId?: string) => Note;
   updateNote: (
     id: string,
-    // Editable fields: text and appearance. Passing a field as `undefined`
-    // clears it (used to switch a note between color/template/no background).
-    patch: Partial<Pick<Note, 'title' | 'content' | 'backgroundColor' | 'backgroundTemplateId' | 'textColor'>>,
+    // Editable fields: text, template type, and appearance. Passing a field
+    // as `undefined` clears it (used to switch a note between
+    // color/template/no background).
+    patch: Partial<
+      Pick<Note, 'title' | 'content' | 'templateType' | 'backgroundColor' | 'backgroundTemplateId' | 'textColor'>
+    >,
   ) => void;
+  // Replaces a checklist note's entire item list (add/remove/reorder/edit all
+  // go through this — see note/[id].tsx). No-op for non-checklist notes.
+  updateChecklistItems: (id: string, items: ChecklistItem[]) => void;
   deleteNote: (id: string) => void;
   moveNote: (id: string, folderId: string) => void;
   getNote: (id: string) => Note | undefined;
@@ -85,31 +87,47 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
   // cleared app stays empty rather than getting the welcome content back.
   useEffect(() => {
     (async () => {
-      const [loadedFolders, loadedNotes, seeded] = await Promise.all([getAllFolders(), getAllNotes(), hasSeeded()]);
-      if (seeded) {
-        setFolders(loadedFolders);
-        setNotes(loadedNotes);
-      } else {
-        const folder: Folder = {
-          id: makeId(),
-          name: 'Category 1',
-          color: '#46B67F', // emerald — same swatch as in the color picker
-          createdAt: Date.now(),
-        };
-        const note: Note = {
-          id: makeId(),
-          folderId: folder.id,
-          title: 'Hello!',
-          content:
-            'Welcome to the app. This is a first note. You can edit text, edit background template, or delete this note and create new ones.',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-        await insertFolder(folder);
-        await insertNote(note);
-        await markSeeded();
-        setFolders([folder]);
-        setNotes([note]);
+      try {
+        const [loadedFolders, loadedNotes, seeded] = await Promise.all([
+          getAllFolders(),
+          getAllNotes(),
+          hasSeeded(),
+        ]);
+        if (seeded) {
+          setFolders(loadedFolders);
+          setNotes(loadedNotes);
+        } else {
+          const folder: Folder = {
+            id: makeId(),
+            name: 'Category 1',
+            color: '#46B67F', // emerald — same swatch as in the color picker
+            createdAt: Date.now(),
+          };
+          const note: Note = {
+            id: makeId(),
+            folderId: folder.id,
+            title: 'Hello!',
+            content:
+              'Welcome to the app. This is a first note. You can edit text, edit background template, or delete this note and create new ones.',
+            templateType: 'plain',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+          await insertFolder(folder);
+          await insertNote(note);
+          await markSeeded();
+          setFolders([folder]);
+          setNotes([note]);
+        }
+      } catch (err) {
+        // Do NOT fall through to the "not seeded" branch above on failure —
+        // a DB read failing is not the same as "this is a fresh install",
+        // and treating it that way could re-seed/duplicate content over
+        // real data once the connection recovers. Surface the failure
+        // loudly and leave folders/notes empty (safe default) rather than
+        // guessing; `loading` still clears below so the UI doesn't spin
+        // forever waiting on a load that already failed.
+        console.error('[notes-store] failed to load folders/notes on startup:', err);
       }
       setLoading(false);
     })();
@@ -143,13 +161,19 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
     // Notes for one folder, most-recently-updated first.
     notesInFolder: (folderId) => notes.filter((n) => n.folderId === folderId).sort((a, b) => b.updatedAt - a.updatedAt),
     uncategorizedNotes: () => notes.filter((n) => !n.folderId).sort((a, b) => b.updatedAt - a.updatedAt),
-    // Create an empty note, in a folder or unsorted; title/content are filled in on the note screen.
+    // Create an empty note, in a folder or unsorted. Defaults to the
+    // checklist template (REQ-08's default) seeded with one empty item, ready
+    // to type into immediately — title/content(/items) are filled in on the
+    // note screen. Notes from before template types existed keep their
+    // original 'plain' type; only *new* notes default to checklist.
     createNote: (folderId) => {
       const note: Note = {
         id: makeId(),
         folderId,
         title: '',
         content: '',
+        templateType: 'checklist',
+        checklistItems: [{ id: makeId(), text: '', done: false }],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -157,11 +181,20 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
       persist('insertNote', insertNote(note));
       return note;
     },
-    // Patch text and/or appearance fields; always refresh updatedAt so ordering reflects the edit.
+    // Patch text/template-type/appearance fields; always refresh updatedAt so
+    // ordering reflects the edit. Switching templateType does NOT convert
+    // content here — the caller (note editor) computes the converted
+    // content/items first and passes the already-converted values in patch.
     updateNote: (id, patch) => {
       const updatedAt = Date.now();
       setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch, updatedAt } : n)));
       persist('updateNoteRow', updateNoteRow(id, { ...patch, updatedAt }));
+    },
+    updateChecklistItems: (id, items) => {
+      const updatedAt = Date.now();
+      setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, checklistItems: items, updatedAt } : n)));
+      persist('replaceChecklistItems', replaceChecklistItems(id, items));
+      persist('updateNoteRow (touch updatedAt)', updateNoteRow(id, { updatedAt }));
     },
     deleteNote: (id) => {
       setNotes((prev) => prev.filter((n) => n.id !== id));

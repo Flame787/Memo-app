@@ -31,11 +31,29 @@ export type Folder = {
   createdAt: number; // epoch ms; used for stable ordering
 };
 
+// How a note's content is structured and rendered. 'plain' is today's single
+// free-text field; 'checklist' and 'daily_schedule' are both a list of
+// checkable items (see ChecklistItem) — 'daily_schedule' just also uses each
+// item's optional `time`. More types (calculation, kanban — see Plan.md
+// REQ-08) get added to this union as they're built, not reserved ahead of time.
+export type TemplateType = 'plain' | 'checklist' | 'daily_schedule';
+
+export type ChecklistItem = {
+  id: string; // unique, generated once on creation
+  text: string;
+  done: boolean;
+  // Free-text time label (e.g. "05:00"); only used/shown when the note's
+  // templateType is 'daily_schedule'. Absent for plain checklist items.
+  time?: string;
+};
+
 export type Note = {
   id: string; // unique, generated once on creation
   folderId?: string; // which folder this note lives in; absent = unsorted (not yet filed)
   title: string;
-  content: string;
+  content: string; // used when templateType === 'plain'
+  templateType: TemplateType;
+  checklistItems?: ChecklistItem[]; // used when templateType === 'checklist'
   createdAt: number; // epoch ms, set once
   updatedAt: number; // epoch ms, bumped on every edit/move; drives recent-first sorting
   // --- Appearance (all optional; absent = a plain note on the theme background) ---

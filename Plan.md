@@ -103,7 +103,7 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-05 | Photos from the gallery | Should | 🔴 Planned |
 | REQ-06 | Contacts import | Could | 🔴 Tentative |
 | REQ-07 | Background template gallery | Should | 🔴 Partially done (see bullets) |
-| REQ-08 | Note template types | Must | 🔴 Planned |
+| REQ-08 | Note template types | Must | 🔴 Partially done (plain, checklist, daily schedule) |
 | REQ-09 | Search | Must/Could | 🔴 Planned (text) / Deferred (voice) |
 | REQ-10 | Dark/light mode toggle | Should | ✅ Done |
 | REQ-11 | Custom photo backgrounds | Should | 🔴 Planned |
@@ -114,8 +114,9 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-16 | Calendar | Must | 🔴 Planned |
 | REQ-17 | Alarms/notifications | Should | 🔴 Planned |
 
-**Next up:** Phase A is done; Phase B is underway (REQ-10 shipped) — REQ-08 (note
-template types) is the suggested next Phase B item, see §9.
+**Next up:** Phase A is done; Phase B is underway (REQ-10 shipped, REQ-08
+partially shipped — plain, checklist, daily schedule). Remaining: REQ-08's
+calculation and Kanban sub-types, then REQ-09/REQ-11/REQ-14/REQ-16/REQ-17.
 
 ### ✅ REQ-01 — Categorization (folders)
 **Priority:** Must · **Status:** Done
@@ -191,21 +192,36 @@ here as explicitly deferred ("not to be done now"); un-deferred 2026-08-15.
     modified, redistributed, and sold.
 
 ### 🔴 REQ-08 — Note template types
-**Priority:** Must · **Status:** Planned (Phase B)
+**Priority:** Must · **Status:** Partially Done (Phase B) — plain, checklist,
+and daily schedule shipped 2026-08-15; calculation and Kanban not yet built.
 
 Each note picks a **template type** governing how its content is structured and
 rendered (chosen at creation; changing it later triggers a best-effort content
 conversion — D-01).
 
-- **Checklist (default)** — a list of items, each with its own checkbox; checking
-  it strikes through that item's text. **Does not exist today** — the current
-  editor is a single free-text `content` field, so this is a real data-model change
-  (a string → a structured item list), not just a new visual style.
-- **Daily schedule** — rows pre-seeded hourly from 05:00 to 22:00, each with a
+- ✅ **Plain text** — today's original single free-text field, kept as its own
+  explicit type (not forced into checklists) precisely so nothing is lost for
+  notes that predate template types, and so "just write something" stays an
+  option going forward — see D-10.
+- ✅ **Checklist (default for new notes)** — a list of items, each with its own
+  checkbox; checking it strikes through that item's text. Implemented: new
+  `checklist_items` SQLite table (FK to `notes`, `ON DELETE CASCADE`), a "Type"
+  chip in the note editor (tap → action sheet → best-effort conversion per
+  D-01), add/edit/toggle/remove item rows, all autosaved on the same 500ms
+  debounce as title/content. New notes default to this type; notes that
+  existed before this shipped keep their original `plain` type unless the user
+  switches them.
+- ✅ **Daily schedule** — rows pre-seeded hourly from 05:00 to 22:00, each with a
   checkbox + an editable free-text label. The hour value is editable, rows can be
-  added/deleted freely, and 05–22 is just a starting default. Structurally this is
-  the checklist template with an extra editable "time" field per item. Feeds REQ-17
-  (alarms) and, via D-08, REQ-16 (calendar).
+  added/deleted freely, and 05–22 is just a starting default. Implemented as the
+  checklist template with an extra editable "time" field per item — same
+  `checklist_items` table (now with a `time` column), same row UI plus a time
+  `TextInput` per row. Reached only via the "Type" chip (new notes still
+  default to checklist, not daily schedule); switching from/to plain or
+  checklist runs a best-effort conversion (merge existing items into the
+  hourly skeleton, or drop the time label going the other way — see D-01).
+  Still to build: REQ-17 (alarms) and, via D-08, REQ-16 (calendar) linking,
+  which both consume this template type once they're scheduled.
 - **Calculation** — free rows of (description, number), a ruled line, and a total
   row below it auto-summing every number above via a selectable operator (default
   `+`). Needs careful numeric-input handling: locale decimal separator, negative
@@ -534,6 +550,18 @@ hunting down which note set it).
 2026-08-15 feature backlog (REQ-08–REQ-17) is sequenced as Phase A (SQLite
 migration, shared infrastructure) → Phase B (local-only features) → Phase C (auth +
 cloud sync, last). See §9 for the full rationale — agreed 2026-08-15.
+
+**D-10 — Existing free-text notes (REQ-08): keep "Plain text" as its own
+template type, not converted.** When checklist became the default template
+type for new notes, the question was what happens to notes that already exist
+with only a free-text paragraph. Chosen: plain text stays a first-class,
+selectable template type alongside checklist/daily-schedule/calculation/kanban
+— not everything has to become a checklist, matching the low-learning-curve
+principle (§2.3). Existing notes keep their `plain` type unmigrated; only
+*new* notes default to checklist. Rejected alternative: convert every existing
+note into a one-item checklist at migration time, strictly matching the
+original 4-type spec but losing the "just write something" option the app
+already had.
 
 ## 7. Technical Design & Architecture Notes
 
@@ -925,6 +953,73 @@ Memo/
   Tapping either icon sets that mode directly. `useThemePreference()`'s API
   changed from `toggle()` to `setScheme(value)` to match.
 - Verified with `npx tsc --noEmit` (clean).
+
+### 2026-08-15, part 7 — REQ-08 (daily schedule template type)
+- **`ChecklistItem` gained an optional `time?: string` field** and
+  `TemplateType` gained `'daily_schedule'` (`src/lib/types.ts`) — daily
+  schedule reuses the checklist's item structure rather than being a separate
+  data shape, exactly as scoped in the requirement.
+- **`db.ts`:** added a `time TEXT` column to `checklist_items` (same
+  guarded-`ALTER TABLE` pattern as the earlier `template_type` migration, via
+  a new `migrateChecklistItemsTimeColumnIfNeeded`). `storage.ts`'s
+  `ITEM_BASED_TEMPLATE_TYPES` list now gates checklist-item hydration/writes
+  for both `'checklist'` and `'daily_schedule'`, and `replaceChecklistItems`
+  writes the `time` column.
+- **`note/[id].tsx`:** added `SCHEDULE_HOURS` (05:00–22:00) and three
+  conversion primitives (`itemsToScheduleItems`, `scheduleItemsToChecklist`,
+  `scheduleItemsToPlain`) that `changeTemplateType` composes for all 6
+  type-pair conversions, rather than writing one dedicated function per pair.
+  Converting *into* daily schedule merges existing items into the hourly
+  skeleton in order, padding empty hours and appending overflow items past
+  22:00 rather than dropping them (D-01). Converting *out* drops the time
+  label (to checklist) or prefixes each line with it (to plain, so the time
+  isn't silently lost). Row UI gained a small time `TextInput` per item, shown
+  only for this template type.
+- **`note-row.tsx`:** preview logic extended to treat `daily_schedule` the
+  same as `checklist` (both read from `checklistItems`), with its own "Empty
+  schedule" placeholder text.
+- Reached only via the "Type" chip — new notes still default to `checklist`,
+  not `daily_schedule` (only REQ-08's checklist is specified as the
+  new-note default).
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 6 — REQ-08 (plain + checklist template types)
+- **New `src/lib/id.ts`:** `makeId()` extracted out of `use-notes-store.tsx`
+  (now shared with the note editor, which needs to mint ids for new checklist
+  items) — no behavior change, just a home both call sites can import from.
+- **`Note` gained `templateType: 'plain' | 'checklist'` and
+  `checklistItems?: ChecklistItem[]`** (`src/lib/types.ts`). The union is
+  intentionally only two values for now — daily-schedule/calculation/kanban
+  get added when each is actually built, not reserved ahead of time.
+- **`db.ts`:** added `template_type` column to `notes` (new installs get it
+  from `CREATE TABLE`; existing databases get it via a guarded
+  `ALTER TABLE ... ADD COLUMN`, checked through `PRAGMA table_info` since
+  SQLite has no `ADD COLUMN IF NOT EXISTS`), plus a new `checklist_items`
+  table (FK to `notes.id`, `ON DELETE CASCADE`, ordered by `position`).
+  Pre-migration AsyncStorage notes are explicitly inserted as `'plain'` (D-10).
+- **`storage.ts`:** `getAllNotes()` now bulk-loads all checklist items in one
+  extra query and attaches them to their notes in memory (not one query per
+  note), so the store's `notes` array stays fully hydrated for previews
+  without an async lookup per row. New `getChecklistItems`/
+  `replaceChecklistItems` (delete-all-then-reinsert-in-order, inside a
+  transaction) — simpler than tracking per-item diffs, and cheap at this
+  app's scale.
+- **`use-notes-store.tsx`:** `createNote()` now defaults to `templateType:
+  'checklist'` seeded with one empty item; new `updateChecklistItems(id,
+  items)` mutator (same fire-and-forget persistence pattern as everything
+  else). `updateNote`'s patch type gained `templateType`.
+- **`note/[id].tsx`:** new "Type" chip next to the folder chip (tap → action
+  sheet → best-effort conversion per D-01, via `plainToChecklistItems`/
+  `checklistItemsToPlain`); checklist body (checkbox + text input + remove
+  per row, "+ Add item" row) rendered instead of the content `TextInput` when
+  `templateType === 'checklist'`. Autosave/flush-on-unmount extended to cover
+  items and templateType alongside title/content, still one 500ms debounce.
+- **`note-row.tsx`:** preview text is now type-aware — checklist notes show
+  `done/total · item texts` instead of a raw content snippet.
+- Also (small, same session): enlarged the REQ-10 ☀️/🌙 header icons
+  (16px → 26px font size, larger `hitSlop` and gap) — they were hard to tap
+  accurately at the original size.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
 
 ### 2026-08-15 — planning session (this URS conversion)
 - Captured a large batch of new requirements (REQ-08–REQ-17) covering note template

@@ -13,12 +13,25 @@ import { resolveNoteTextColor, withAlpha } from '@/lib/appearance';
 import { getTemplateById } from '@/lib/templates';
 import { Note } from '@/lib/types';
 
-// Build the one-line preview shown under the title: trim, fall back to a
-// placeholder when empty, and cap the length with an ellipsis.
-function preview(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return 'Empty note';
-  return trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
+// Cap a preview string's length with an ellipsis.
+function truncate(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
+// Build the one-line preview shown under the title: for a plain note, the
+// free-text content; for a checklist or daily schedule, a "done/total" count
+// plus the item texts. Falls back to a placeholder when there's nothing to
+// show yet.
+function preview(note: Note): string {
+  if (note.templateType === 'checklist' || note.templateType === 'daily_schedule') {
+    const items = note.checklistItems ?? [];
+    const withText = items.filter((i) => i.text.trim());
+    if (withText.length === 0) return note.templateType === 'daily_schedule' ? 'Empty schedule' : 'Empty checklist';
+    const done = items.filter((i) => i.done).length;
+    return `${done}/${items.length} · ${truncate(withText.map((i) => i.text.trim()).join(', '))}`;
+  }
+  const trimmed = note.content.trim();
+  return trimmed ? truncate(trimmed) : 'Empty note';
 }
 
 export function NoteRow({
@@ -77,7 +90,7 @@ export function NoteRow({
         numberOfLines={1}
         themeColor={hasCustomTextColor ? undefined : 'textSecondary'}
         style={hasCustomTextColor ? { color: withAlpha(textColor, 0.75) } : undefined}>
-        {preview(note.content)}
+        {preview(note)}
       </ThemedText>
     </Pressable>
   );

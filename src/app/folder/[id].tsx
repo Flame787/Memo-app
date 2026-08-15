@@ -1,45 +1,64 @@
 // Folder detail screen: lists the notes inside one folder (route param `id`)
 // and offers per-note and whole-folder actions.
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+// for the header title and "⋯" menu, and to navigate to the note editor
+import { useState } from "react";
+import {
+  Alert,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
+// for the rename/recolor panel, the note list, and the "Add new note" tile
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { NoteRow } from '@/components/note-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { FOLDER_COLORS, Spacing } from '@/constants/theme';
-import { useNotesStore } from '@/hooks/use-notes-store';
-import { useTheme } from '@/hooks/use-theme';
-import { useThemePreference } from '@/hooks/use-theme-preference';
-import { FolderColor } from '@/lib/types';
+import { NoteRow } from "@/components/note-row"; // row background and text auto-contrasted against it. Shared by the folder screen's note list and the home screen's "unsorted notes" list, so both stay visually and behaviorally identical.
+import { ThemedText } from "@/components/themed-text";
+import { ThemedView } from "@/components/themed-view";
+import { FOLDER_COLORS, Spacing } from "@/constants/theme"; // curated palette of harmonious colors for folders, used in the color picker and stored in the database
+import { useNotesStore } from "@/hooks/use-notes-store"; // global notes/folders store (see use-notes-store.tsx) that owns the data and decides when to save it to storage
+import { useTheme } from "@/hooks/use-theme"; // hook to get the current theme colors (light/dark mode, plus the actual color values for text, background, etc.)
+import { useThemePreference } from "@/hooks/use-theme-preference"; // hook to get the user's system theme preference (light/dark) so we can adjust the ghost tile background color accordingly
+import { FolderColor } from "@/lib/types"; // type for the fixed palette of folder colors, used in the color picker and stored in the database
 
 // "Border" thickness for the ghost "Add new note" tile (see
 // addNoteTileOuter/Inner below).
-const GHOST_BORDER = 2;
+const GHOST_BORDER = 2; // px; the outer view's padding is this, and the inner view's radius is the outer radius minus this, so the ring reads as an even width all the way around, corners included.
 
 export default function FolderScreen() {
+  // Get the folder id from the URL, and the global notes/folders store.
   const { id } = useLocalSearchParams<{ id: string }>(); // folder id from the URL
   const router = useRouter();
-  const { folders, getFolder, notesInFolder, createNote, deleteNote, moveNote, deleteFolder, updateFolder } =
-    useNotesStore();
+  const {
+    folders,
+    getFolder,
+    notesInFolder,
+    createNote,
+    deleteNote,
+    moveNote,
+    deleteFolder,
+    updateFolder,
+  } = useNotesStore();
+  // global store that owns the notes/folders data and decides when to save it to storage
   const theme = useTheme(); // for the default (no-background) note text colors
   const { scheme } = useThemePreference();
   // See the matching comment in app/index.tsx: this workaround is only valid
   // for dark mode (where theme.backgroundElement was confirmed invisible on
   // the author's device) — in light mode, use the real theme color.
-  const ghostFill = scheme === 'dark' ? '#212225' : theme.backgroundElement;
+  const ghostFill = scheme === "dark" ? "#212225" : theme.backgroundElement;
   const folder = getFolder(id); // may be undefined if the folder was just deleted
   const notes = notesInFolder(id); // already sorted most-recent-first by the store
 
   // Local draft state for the rename/recolor panel (seeded from the folder when opened).
   const [isEditing, setIsEditing] = useState(false);
-  const [editName, setEditName] = useState('');
+  const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState<FolderColor>(FOLDER_COLORS[0]);
 
   // Open the edit panel pre-filled with the folder's current name/color.
   function startEditing() {
-    setEditName(folder?.name ?? '');
+    setEditName(folder?.name ?? "");
     setEditColor(folder?.color ?? FOLDER_COLORS[0]);
     setIsEditing(true);
   }
@@ -65,35 +84,43 @@ export default function FolderScreen() {
       text: `Move to "${f.name}"`,
       onPress: () => moveNote(noteId, f.id),
     }));
-    Alert.alert('Note', undefined, [
+    Alert.alert("Note", undefined, [
       ...moveOptions,
-      { text: 'Delete', style: 'destructive', onPress: () => deleteNote(noteId) },
-      { text: 'Cancel', style: 'cancel' },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => deleteNote(noteId),
+      },
+      { text: "Cancel", style: "cancel" },
     ]);
   }
 
   // Header "⋯" menu: edit (rename/recolor), or delete the whole folder behind
   // a second confirmation because it also removes every note inside it.
   function handleFolderOptions() {
-    Alert.alert(folder?.name ?? 'Category', undefined, [
-      { text: 'Edit', onPress: startEditing },
+    Alert.alert(folder?.name ?? "Category", undefined, [
+      { text: "Edit", onPress: startEditing },
       {
-        text: 'Delete category',
-        style: 'destructive',
+        text: "Delete category",
+        style: "destructive",
         onPress: () =>
-          Alert.alert('Delete this category?', 'All notes in this category will be permanently deleted.', [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Delete',
-              style: 'destructive',
-              onPress: () => {
-                deleteFolder(id);
-                router.back();
+          Alert.alert(
+            "Delete this category?",
+            "All notes in this category will be permanently deleted.",
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Delete",
+                style: "destructive",
+                onPress: () => {
+                  deleteFolder(id);
+                  router.back();
+                },
               },
-            },
-          ]),
+            ],
+          ),
       },
-      { text: 'Cancel', style: 'cancel' },
+      { text: "Cancel", style: "cancel" },
     ]);
   }
 
@@ -102,7 +129,7 @@ export default function FolderScreen() {
       {/* Set the header title to the folder name and add the options button. */}
       <Stack.Screen
         options={{
-          title: folder?.name ?? '',
+          title: folder?.name ?? "",
           headerRight: () => (
             <Pressable onPress={handleFolderOptions} hitSlop={12}>
               <ThemedText type="default">⋯</ThemedText>
@@ -110,7 +137,7 @@ export default function FolderScreen() {
           ),
         }}
       />
-      <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+      <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
         {/* Rename/recolor panel, opened from the header "⋯" menu. */}
         {isEditing && (
           <ThemedView type="backgroundElement" style={styles.editPanel}>
@@ -130,13 +157,19 @@ export default function FolderScreen() {
                   style={[
                     styles.swatch,
                     { backgroundColor: c },
-                    editColor === c && { borderWidth: 3, borderColor: theme.text },
+                    editColor === c && {
+                      borderWidth: 3,
+                      borderColor: theme.text,
+                    },
                   ]}
                 />
               ))}
             </View>
             <View style={styles.editActions}>
-              <Pressable onPress={() => setIsEditing(false)} style={styles.cancelButton}>
+              <Pressable
+                onPress={() => setIsEditing(false)}
+                style={styles.cancelButton}
+              >
                 <ThemedText themeColor="textSecondary">Cancel</ThemedText>
               </Pressable>
               <Pressable onPress={handleSaveEdit} style={styles.saveButton}>
@@ -169,9 +202,18 @@ export default function FolderScreen() {
             // unconfirmed. Mid-grey (#999999) is dark enough to be left alone
             // by that heuristic while still reading as light/neutral.
             <Pressable
-              style={[styles.addNoteTileOuter, { backgroundColor: '#999999E6' }]}
-              onPress={handleCreateNote}>
-              <View style={[styles.addNoteTileInner, { backgroundColor: ghostFill }]}>
+              style={[
+                styles.addNoteTileOuter,
+                { backgroundColor: "#999999E6" },
+              ]}
+              onPress={handleCreateNote}
+            >
+              <View
+                style={[
+                  styles.addNoteTileInner,
+                  { backgroundColor: ghostFill },
+                ]}
+              >
                 <ThemedText type="smallBold" style={{ color: theme.text }}>
                   +
                 </ThemedText>
@@ -187,10 +229,20 @@ export default function FolderScreen() {
   );
 }
 
+// Styles for the folder screen, including the rename/recolor panel and the
+// "Add new note" ghost tile. The latter uses two stacked solid-color views
+// (outer = grey, inner = the card color) instead of borderWidth/borderColor,
+// which rendered inconsistently on Android. The inner radius is the outer
+// radius minus the padding (border thickness), so the ring reads as an even
+// width all the way around, corners included.
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.three },
-  list: { paddingTop: Spacing.three, paddingBottom: Spacing.six, gap: Spacing.two },
+  list: {
+    paddingTop: Spacing.three,
+    paddingBottom: Spacing.six,
+    gap: Spacing.two,
+  },
   // Rename/recolor panel (same visual language as the "new category" panel on
   // the home screen: name field + color swatches + cancel/save row).
   editPanel: {
@@ -201,23 +253,30 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: "#ccc",
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
     fontSize: 16,
   },
-  colorRow: { flexDirection: 'row', gap: Spacing.two, flexWrap: 'wrap' },
+  colorRow: { flexDirection: "row", gap: Spacing.two, flexWrap: "wrap" },
   swatch: { width: 32, height: 32, borderRadius: 16 },
-  editActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.three },
-  cancelButton: { paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
+  editActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: Spacing.three,
+  },
+  cancelButton: {
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+  },
   saveButton: {
-    backgroundColor: '#5B7FE0',
+    backgroundColor: "#5B7FE0",
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.four,
     borderRadius: Spacing.two,
   },
-  saveButtonText: { color: '#fff', fontWeight: '700' },
+  saveButtonText: { color: "#fff", fontWeight: "700" },
   // Ghost tile "border": two stacked solid-color views (see the matching
   // comment in index.tsx's ghostOuter/ghostInner) instead of
   // borderWidth/borderColor, which rendered inconsistently on Android. The
@@ -234,6 +293,6 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two - GHOST_BORDER,
     padding: Spacing.three,
     gap: Spacing.half,
-    alignItems: 'center',
+    alignItems: "center",
   },
 });

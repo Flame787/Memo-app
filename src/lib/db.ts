@@ -21,21 +21,45 @@ let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
-    dbPromise = openAndPrepareDb();
+    dbPromise = openAndPrepareDb().catch((err) => {
+      // Don't permanently cache a failed open: without this, one bad attempt
+      // (e.g. a transient native-handle/lock issue from a prior session)
+      // would poison every future getDb() call for the rest of this JS
+      // session, since `dbPromise` was already set and the `if (!dbPromise)`
+      // guard above would never retry. Clearing it here means the *next*
+      // call gets a fresh attempt instead of the same cached rejection.
+      dbPromise = null;
+      throw err;
+    });
   }
   return dbPromise;
 }
 
+// Runs one async step with a descriptive label, so a failure names exactly
+// which stage broke (schema setup vs. a specific migration vs. opening the
+// connection) instead of a bare native error with no context — the generic
+// "NullPointerException" Android/expo-sqlite reports on failure is useless
+// on its own.
+async function step<T>(label: string, task: () => Promise<T>): Promise<T> {
+  try {
+    return await task();
+  } catch (err) {
+    console.error(`[db] failed during: ${label}`, err);
+    throw err;
+  }
+}
+
 async function openAndPrepareDb(): Promise<SQLite.SQLiteDatabase> {
-  const db = await SQLite.openDatabaseAsync('memo.db');
+  const db = await step('open memo.db', () => SQLite.openDatabaseAsync('memo.db'));
 
   // WAL = better concurrent read/write behavior; foreign_keys must be turned on
   // per-connection in SQLite (it defaults to off) for the ON DELETE CASCADE
   // below to actually take effect.
-  await db.execAsync('PRAGMA journal_mode = WAL;');
-  await db.execAsync('PRAGMA foreign_keys = ON;');
+  await step('PRAGMA journal_mode', () => db.execAsync('PRAGMA journal_mode = WAL;'));
+  await step('PRAGMA foreign_keys', () => db.execAsync('PRAGMA foreign_keys = ON;'));
 
-  await db.execAsync(`
+  await step('create schema', () =>
+    db.execAsync(`
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
@@ -48,6 +72,7 @@ async function openAndPrepareDb(): Promise<SQLite.SQLiteDatabase> {
       folder_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT '',
       content TEXT NOT NULL DEFAULT '',
+      template_type TEXT NOT NULL DEFAULT 'plain',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       background_color TEXT,
@@ -57,17 +82,64 @@ async function openAndPrepareDb(): Promise<SQLite.SQLiteDatabase> {
 
     CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id);
 
+    -- One row per checklist/daily-schedule item, ordered within a note by
+    -- 'position'. 'time' is only populated for daily_schedule notes (NULL
+    -- otherwise) — same table backs both template types, since a
+    -- daily-schedule row is structurally a checklist item plus a time label.
+    -- Deleting a note deletes its items automatically (ON DELETE CASCADE),
+    -- same as folders -> notes.
+    CREATE TABLE IF NOT EXISTS checklist_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      done INTEGER NOT NULL DEFAULT 0,
+      time TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_note_id ON checklist_items(note_id);
+
     -- Small key/value table for one-off flags (first-launch seed, migration
     -- done) instead of a whole extra AsyncStorage key per flag.
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
-  `);
+  `),
+  );
 
-  await migrateFromAsyncStorageIfNeeded(db);
+  await step('migrate: notes.template_type column', () => migrateNotesTemplateTypeColumnIfNeeded(db));
+  await step('migrate: checklist_items.time column', () => migrateChecklistItemsTimeColumnIfNeeded(db));
+  await step('migrate: from AsyncStorage', () => migrateFromAsyncStorageIfNeeded(db));
 
   return db;
+}
+
+// `CREATE TABLE IF NOT EXISTS` above only defines the shape for a *brand new*
+// database — it does nothing to a `notes` table that already existed from
+// before REQ-08 (template types) was added, since that table has no
+// `template_type` column yet. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+// check for the column explicitly via `PRAGMA table_info` and add it only if
+// missing. Existing rows get the column's default ('plain'), which is exactly
+// right: notes written before template types existed keep behaving as plain
+// free-text notes, not silently turned into (empty) checklists.
+async function migrateNotesTemplateTypeColumnIfNeeded(db: SQLite.SQLiteDatabase): Promise<void> {
+  const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(notes);');
+  const hasColumn = columns.some((c) => c.name === 'template_type');
+  if (!hasColumn) {
+    await db.execAsync("ALTER TABLE notes ADD COLUMN template_type TEXT NOT NULL DEFAULT 'plain';");
+  }
+}
+
+// Same reasoning as migrateNotesTemplateTypeColumnIfNeeded above, for the
+// 'time' column added to checklist_items when the daily-schedule template
+// type was introduced.
+async function migrateChecklistItemsTimeColumnIfNeeded(db: SQLite.SQLiteDatabase): Promise<void> {
+  const columns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(checklist_items);');
+  const hasColumn = columns.some((c) => c.name === 'time');
+  if (!hasColumn) {
+    await db.execAsync('ALTER TABLE checklist_items ADD COLUMN time TEXT;');
+  }
 }
 
 // Runs once per install: if the app previously stored folders/notes in
@@ -102,10 +174,12 @@ async function migrateFromAsyncStorageIfNeeded(db: SQLite.SQLiteDatabase): Promi
       ]);
     }
     for (const note of oldNotes) {
+      // Pre-migration notes predate template types entirely — they're always
+      // plain free-text notes, never (empty) checklists.
       await db.runAsync(
         `INSERT OR IGNORE INTO notes
-          (id, folder_id, title, content, created_at, updated_at, background_color, background_template_id, text_color)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          (id, folder_id, title, content, template_type, created_at, updated_at, background_color, background_template_id, text_color)
+         VALUES (?, ?, ?, ?, 'plain', ?, ?, ?, ?, ?);`,
         [
           note.id,
           note.folderId ?? null,
