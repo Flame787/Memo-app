@@ -34,9 +34,10 @@ export type Folder = {
 // How a note's content is structured and rendered. 'plain' is today's single
 // free-text field; 'checklist' and 'daily_schedule' are both a list of
 // checkable items (see ChecklistItem) — 'daily_schedule' just also uses each
-// item's optional `time`. More types (calculation, kanban — see Plan.md
-// REQ-08) get added to this union as they're built, not reserved ahead of time.
-export type TemplateType = 'plain' | 'checklist' | 'daily_schedule';
+// item's optional `time`. 'calculation' is a list of (description, amount)
+// rows summed below a ruled line. Kanban (Plan.md REQ-08) gets added to this
+// union when it's built, not reserved ahead of time.
+export type TemplateType = 'plain' | 'checklist' | 'daily_schedule' | 'calculation';
 
 export type ChecklistItem = {
   id: string; // unique, generated once on creation
@@ -47,13 +48,24 @@ export type ChecklistItem = {
   time?: string;
 };
 
+export type CalculationRow = {
+  id: string; // unique, generated once on creation
+  description: string;
+  // Free-text, not a number: keeps a locale decimal comma or a mid-typing
+  // "-" from being rejected while editing. Parsed leniently (and only at sum
+  // time) by the note editor — an unparseable value contributes 0 rather
+  // than crashing the total.
+  amount: string;
+};
+
 export type Note = {
   id: string; // unique, generated once on creation
   folderId?: string; // which folder this note lives in; absent = unsorted (not yet filed)
   title: string;
   content: string; // used when templateType === 'plain'
   templateType: TemplateType;
-  checklistItems?: ChecklistItem[]; // used when templateType === 'checklist'
+  checklistItems?: ChecklistItem[]; // used when templateType is 'checklist' or 'daily_schedule'
+  calculationRows?: CalculationRow[]; // used when templateType === 'calculation'
   createdAt: number; // epoch ms, set once
   updatedAt: number; // epoch ms, bumped on every edit/move; drives recent-first sorting
   // --- Appearance (all optional; absent = a plain note on the theme background) ---

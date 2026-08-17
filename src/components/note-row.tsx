@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { resolveNoteTextColor, withAlpha } from '@/lib/appearance';
+import { formatSum, sumCalculationRows } from '@/lib/calculation';
 import { getTemplateById } from '@/lib/templates';
 import { Note } from '@/lib/types';
 
@@ -20,8 +21,8 @@ function truncate(text: string): string {
 
 // Build the one-line preview shown under the title: for a plain note, the
 // free-text content; for a checklist or daily schedule, a "done/total" count
-// plus the item texts. Falls back to a placeholder when there's nothing to
-// show yet.
+// plus the item texts; for a calculation, the running total plus the row
+// descriptions. Falls back to a placeholder when there's nothing to show yet.
 function preview(note: Note): string {
   if (note.templateType === 'checklist' || note.templateType === 'daily_schedule') {
     const items = note.checklistItems ?? [];
@@ -29,6 +30,12 @@ function preview(note: Note): string {
     if (withText.length === 0) return note.templateType === 'daily_schedule' ? 'Empty schedule' : 'Empty checklist';
     const done = items.filter((i) => i.done).length;
     return `${done}/${items.length} · ${truncate(withText.map((i) => i.text.trim()).join(', '))}`;
+  }
+  if (note.templateType === 'calculation') {
+    const rows = note.calculationRows ?? [];
+    const withDescription = rows.filter((r) => r.description.trim());
+    if (withDescription.length === 0) return 'Empty calculation';
+    return `= ${formatSum(sumCalculationRows(rows))} · ${truncate(withDescription.map((r) => r.description.trim()).join(', '))}`;
   }
   const trimmed = note.content.trim();
   return trimmed ? truncate(trimmed) : 'Empty note';

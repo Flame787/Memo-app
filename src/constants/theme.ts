@@ -12,9 +12,13 @@ import type { FolderColor } from '@/lib/types';
 export const Colors = {
   light: {
     text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
+    // A soft, low-saturation blue instead of flat white — enough tint to
+    // feel intentional without competing with note/folder colors laid on
+    // top of it. backgroundElement (cards/panels) stays a touch lighter so
+    // they still read as "elevated" above this.
+    background: '#D9E5F0',
+    backgroundElement: '#F5F8FB',
+    backgroundSelected: '#DCE7F0',
     textSecondary: '#60646C',
   },
   dark: {
@@ -87,6 +91,12 @@ export const FOLDER_COLORS: FolderColor[] = [
   '#7A4FC9',
   '#A6795A',
 ];
+
+// Shared "destructive action" red — every ✕ that closes a panel or removes/
+// deletes something (note editor's checklist/calc rows, folder screen's
+// delete-category row) uses this same tone, so red always means the same
+// thing across the app. One of FOLDER_COLORS' existing tones, not a new one.
+export const DESTRUCTIVE_COLOR = '#D6453F';
 
 // Extra bottom padding to clear the OS tab bar / home indicator, per platform.
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;

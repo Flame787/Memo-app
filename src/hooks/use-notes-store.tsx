@@ -24,11 +24,12 @@ import {
   insertFolder,
   insertNote,
   markSeeded,
+  replaceCalculationRows,
   replaceChecklistItems,
   updateFolderRow,
   updateNoteRow,
 } from '@/lib/storage';
-import { ChecklistItem, Folder, FolderColor, Note } from '@/lib/types';
+import { CalculationRow, ChecklistItem, Folder, FolderColor, Note } from '@/lib/types';
 
 // Fire-and-forget a persistence call: log if it fails, but never throw into
 // the caller (a mutator's UI-facing return value already went out).
@@ -61,9 +62,11 @@ type NotesStore = {
       Pick<Note, 'title' | 'content' | 'templateType' | 'backgroundColor' | 'backgroundTemplateId' | 'textColor'>
     >,
   ) => void;
-  // Replaces a checklist note's entire item list (add/remove/reorder/edit all
-  // go through this — see note/[id].tsx). No-op for non-checklist notes.
+  // Replaces a checklist/daily-schedule note's entire item list (add/remove/
+  // reorder/edit all go through this — see note/[id].tsx).
   updateChecklistItems: (id: string, items: ChecklistItem[]) => void;
+  // Replaces a calculation note's entire row list, same pattern.
+  updateCalculationRows: (id: string, rows: CalculationRow[]) => void;
   deleteNote: (id: string) => void;
   moveNote: (id: string, folderId: string) => void;
   getNote: (id: string) => Note | undefined;
@@ -161,19 +164,16 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
     // Notes for one folder, most-recently-updated first.
     notesInFolder: (folderId) => notes.filter((n) => n.folderId === folderId).sort((a, b) => b.updatedAt - a.updatedAt),
     uncategorizedNotes: () => notes.filter((n) => !n.folderId).sort((a, b) => b.updatedAt - a.updatedAt),
-    // Create an empty note, in a folder or unsorted. Defaults to the
-    // checklist template (REQ-08's default) seeded with one empty item, ready
-    // to type into immediately — title/content(/items) are filled in on the
-    // note screen. Notes from before template types existed keep their
-    // original 'plain' type; only *new* notes default to checklist.
+    // Create an empty note, in a folder or unsorted. Defaults to the plain
+    // text template — the user can pick Checklist/Daily schedule/Sum later
+    // from the note editor, but every *new* note starts as plain text.
     createNote: (folderId) => {
       const note: Note = {
         id: makeId(),
         folderId,
         title: '',
         content: '',
-        templateType: 'checklist',
-        checklistItems: [{ id: makeId(), text: '', done: false }],
+        templateType: 'plain',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -194,6 +194,12 @@ export function NotesStoreProvider({ children }: { children: ReactNode }) {
       const updatedAt = Date.now();
       setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, checklistItems: items, updatedAt } : n)));
       persist('replaceChecklistItems', replaceChecklistItems(id, items));
+      persist('updateNoteRow (touch updatedAt)', updateNoteRow(id, { updatedAt }));
+    },
+    updateCalculationRows: (id, rows) => {
+      const updatedAt = Date.now();
+      setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, calculationRows: rows, updatedAt } : n)));
+      persist('replaceCalculationRows', replaceCalculationRows(id, rows));
       persist('updateNoteRow (touch updatedAt)', updateNoteRow(id, { updatedAt }));
     },
     deleteNote: (id) => {

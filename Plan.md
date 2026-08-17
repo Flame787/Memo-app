@@ -13,7 +13,8 @@ changelog kept separately).
 ### 1.1 Purpose
 Specifies what Memo must do (§3 functional requirements, §4 non-functional
 requirements), the reasoning behind how it's built (§7), a running log of decisions
-made along the way (§6), known issues (§8), and where the project currently stands
+made along the way (§6), known issues (§8), how local data storage/distribution/
+updates actually work (§12), and where the project currently stands
 (§11 revision history) and is headed (§9 roadmap).
 
 ### 1.2 Product overview
@@ -103,7 +104,7 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-05 | Photos from the gallery | Should | 🔴 Planned |
 | REQ-06 | Contacts import | Could | 🔴 Tentative |
 | REQ-07 | Background template gallery | Should | 🔴 Partially done (see bullets) |
-| REQ-08 | Note template types | Must | 🔴 Partially done (plain, checklist, daily schedule) |
+| REQ-08 | Note template types | Must | 🔴 Partially done (plain, checklist, daily schedule, calculation) |
 | REQ-09 | Search | Must/Could | 🔴 Planned (text) / Deferred (voice) |
 | REQ-10 | Dark/light mode toggle | Should | ✅ Done |
 | REQ-11 | Custom photo backgrounds | Should | 🔴 Planned |
@@ -115,8 +116,8 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-17 | Alarms/notifications | Should | 🔴 Planned |
 
 **Next up:** Phase A is done; Phase B is underway (REQ-10 shipped, REQ-08
-partially shipped — plain, checklist, daily schedule). Remaining: REQ-08's
-calculation and Kanban sub-types, then REQ-09/REQ-11/REQ-14/REQ-16/REQ-17.
+partially shipped — plain, checklist, daily schedule, calculation). Remaining:
+REQ-08's Kanban sub-type, then REQ-09/REQ-11/REQ-14/REQ-16/REQ-17.
 
 ### ✅ REQ-01 — Categorization (folders)
 **Priority:** Must · **Status:** Done
@@ -193,7 +194,7 @@ here as explicitly deferred ("not to be done now"); un-deferred 2026-08-15.
 
 ### 🔴 REQ-08 — Note template types
 **Priority:** Must · **Status:** Partially Done (Phase B) — plain, checklist,
-and daily schedule shipped 2026-08-15; calculation and Kanban not yet built.
+daily schedule, and calculation shipped 2026-08-15; Kanban not yet built.
 
 Each note picks a **template type** governing how its content is structured and
 rendered (chosen at creation; changing it later triggers a best-effort content
@@ -206,11 +207,15 @@ conversion — D-01).
 - ✅ **Checklist (default for new notes)** — a list of items, each with its own
   checkbox; checking it strikes through that item's text. Implemented: new
   `checklist_items` SQLite table (FK to `notes`, `ON DELETE CASCADE`), a "Type"
-  chip in the note editor (tap → action sheet → best-effort conversion per
-  D-01), add/edit/toggle/remove item rows, all autosaved on the same 500ms
-  debounce as title/content. New notes default to this type; notes that
-  existed before this shipped keep their original `plain` type unless the user
-  switches them.
+  chip in the note editor, add/edit/toggle/remove item rows, all autosaved on
+  the same 500ms debounce as title/content. New notes default to this type;
+  notes that existed before this shipped keep their original `plain` type
+  unless the user switches them. **Type picker is an inline panel, not
+  `Alert.alert`** — Android's `Alert.alert` only reliably renders ~3 buttons,
+  which silently dropped the "Calculation" option once there were 4 template
+  types + Cancel (5 buttons); switched to the same in-editor panel pattern
+  already used for the 🎨 background/text-color picker, with its own ✕ to
+  dismiss without picking anything.
 - ✅ **Daily schedule** — rows pre-seeded hourly from 05:00 to 22:00, each with a
   checkbox + an editable free-text label. The hour value is editable, rows can be
   added/deleted freely, and 05–22 is just a starting default. Implemented as the
@@ -222,10 +227,28 @@ conversion — D-01).
   hourly skeleton, or drop the time label going the other way — see D-01).
   Still to build: REQ-17 (alarms) and, via D-08, REQ-16 (calendar) linking,
   which both consume this template type once they're scheduled.
-- **Calculation** — free rows of (description, number), a ruled line, and a total
-  row below it auto-summing every number above via a selectable operator (default
-  `+`). Needs careful numeric-input handling: locale decimal separator, negative
-  numbers, rejecting non-numeric input without crashing the sum.
+- ✅ **Calculation** (internal id `'calculation'`; UI label **"Sum / Costs"** —
+  renamed 2026-08-15 since "Calculation" tested as too generic for what the
+  template actually does) — free rows of (description, amount), a ruled line,
+  and a total row below it auto-summing every amount above. New `calculation_rows`
+  SQLite table (same shape/pattern as `checklist_items`: FK to `notes`,
+  `ON DELETE CASCADE`, delete-all-then-reinsert-in-order on every save).
+  Amount is stored and edited as free text, not a number — parsed leniently
+  only at sum time (`src/lib/calculation.ts`, shared by the editor's live
+  total and the list preview): a locale decimal comma is treated as a point,
+  negative numbers work via a leading "-", and anything that still doesn't
+  parse contributes 0 instead of crashing the total, so a row mid-edit never
+  breaks the display. **Scope simplification (resolves the operator question
+  left open since this requirement was first drafted, see D-11):** the "+"
+  is a fixed label next to the total, not a switchable −/×/÷ control —
+  "auto-sums every number above" is the actual described behavior, and
+  multiplying/dividing a whole column of rows together isn't a coherent
+  single operation the way addition is. Reached only via the "Type" chip
+  (new notes still default to checklist); converting to/from calculation
+  combines each row's description and amount into one line for line-based
+  types, and splits lines back into description-only rows the other way
+  (an amount typed as free text can't be reliably recovered from a
+  formatted line — best-effort, not lossless, per D-01).
 - **Kanban board** — three horizontally-scrollable columns (Backlog / In Process /
   Done); the interaction for moving a task between columns is **swipe left/right**
   on the card — see D-05 for the alternatives considered and why.
@@ -561,7 +584,30 @@ principle (§2.3). Existing notes keep their `plain` type unmigrated; only
 *new* notes default to checklist. Rejected alternative: convert every existing
 note into a one-item checklist at migration time, strictly matching the
 original 4-type spec but losing the "just write something" option the app
-already had.
+already had. **Update (2026-08-17, part 20):** the default for *new* notes
+was changed back to plain text (see §11) — this decision's actual point,
+that plain stays a first-class, never-force-converted template, is unaffected
+either way.
+
+**D-11 — Calculation template (REQ-08): addition only, "+" shown as a fixed
+label, not a switchable operator.** The original requirement text ("a total
+row... and some math symbol (default +) that auto-sums every number above")
+left open whether −/×/÷ should also be selectable. Resolved: no — the request
+consistently describes a *sum*, and multiplying or dividing an entire column
+of free-form rows together isn't a coherent single operation the way addition
+naturally is for a running total/expense-list use case. The "+" is cosmetic,
+confirming what the row already does, not a control. Revisit only if a
+concrete use case for a different aggregate operation is actually requested.
+
+**D-12 — Distribution & authentication timing: EAS Build (no auth) before Phase
+C.** Discussed 2026-08-17. The app is currently local-only (no server exists at
+all — see §12), so there is no shared resource for a login to protect; today's
+actual security boundary is the OS app sandbox (§12.1), not a login screen.
+Decided: move from Expo Go to a real distributable build via **EAS Build**
+(§12.3) for real-device testing, while deliberately deferring authentication
+until Phase C (D-06/D-09) actually introduces a backend. Adding auth earlier
+would add real complexity (credential storage, token handling) with no
+matching data to protect yet.
 
 ## 7. Technical Design & Architecture Notes
 
@@ -658,6 +704,67 @@ pipeline.
 build, ~200 KB, no repo bloat). Never commit multi-MB originals — keep them outside
 the repo. If the library gets large or moves to network delivery, stop bundling
 entirely: host on cloud storage/CDN, download at runtime.
+
+### Icon system: Lucide (2026-08-15)
+
+Emoji characters (🎨 🗑 ☀️ 🌙 ✕ "+") were used as UI icons up through Phase B's
+early work — functional, but read as unpolished, and inconsistent across
+platforms/fonts (an emoji can render differently per OS). Replaced with
+**[Lucide](https://lucide.dev/icons/)** (`lucide-react-native` +
+`react-native-svg`, both MIT-licensed, free, no attribution required) — chosen
+over the alternatives compared (`@expo/vector-icons`'s bundled sets, Phosphor,
+Tabler, Feather) specifically because it's one consistent icon family designed
+as a whole, not a grab-bag of differently-styled sets; mixing families was the
+thing to avoid for a coherent look.
+
+**Usage pattern:** import the named icon component directly
+(`import { Trash2 } from 'lucide-react-native'`) and render it as a component
+with `size` (number, px) and `color` (hex string) props — same component API
+as any other RN element, no icon-font/ligature setup needed. Icons take color
+directly as a prop rather than through `ThemedText`'s color system, so pass
+`theme.text` (chrome/header context) or the note's computed `textColor`
+(inside a note, so the icon matches auto-contrast against the background)
+explicitly at each call site.
+
+**Current mapping** (`src/app/index.tsx`, `src/app/folder/[id].tsx`,
+`src/app/note/[id].tsx`):
+
+| Icon | Used for |
+|---|---|
+| `Sun` / `Moon` | REQ-10 dark/light picker |
+| `LayoutGrid` | Home screen header title, before "Memo app" |
+| `Folder` (aliased `FolderIcon` to avoid clashing with the `Folder` data type) | Folder screen header title, before the category name |
+| `FolderPen` | "Add new category" tile |
+| `NotepadText` | "Add new note" tiles (home + folder screen) |
+| `Palette` | Note editor: open background/text-color panel |
+| `Trash2` | Note editor: delete note |
+| `ArrowDownUp` | Note editor: folder chip (replaces "· change" text) |
+| `Pencil` | Note editor: note-type chip (replaces "· change" text) |
+| `X` | Dismiss the move/note-type panels; remove a checklist item / calculation row |
+| `TextAlignJustify` | Note-type option: Plain text |
+| `ListTodo` | Note-type option: Checklist |
+| `CalendarCheck2` | Note-type option: Daily schedule |
+| `SquarePlus` | Note-type option: Sum / Costs |
+
+**Also converted while touching this: "Move to" folder picker.** Was an
+`Alert.alert` action sheet — the same Android ~3-button ceiling already hit
+once by the note-type picker (see §11's "Calculation missing from picker" bug
+entry). Replaced with the same inline-panel pattern (✕ to dismiss, tap a row
+to act) used for the note-type picker, both for consistency and so it doesn't
+silently break once a user has more than ~2 categories.
+
+**Reserved for future features** (icon already chosen so later work stays
+consistent — not wired to any UI yet): `Mic` (voice input, REQ-09/13, still
+deferred), `CalendarDays` (REQ-16 calendar, not built), `Mail` (share a note
+via email, not yet a requirement in this document), `Forward` (share via
+another app, e.g. WhatsApp — not yet a requirement), `Download` (save a note
+as a file/image — not yet a requirement). `Pencil` was reserved for a generic
+"edit" affordance but has since been put into actual use (note-type chip,
+2026-08-15 part 13) — see the mapping table above.
+
+**Not yet replaced** (still emoji, no icon chosen): the "⊘ None" background
+swatch in the note editor, and the "⋯" folder options menu in
+`folder/[id].tsx` — flagged, not forgotten; revisit if/when picking those up.
 
 ## 8. Known Issues
 
@@ -954,6 +1061,305 @@ Memo/
   changed from `toggle()` to `setScheme(value)` to match.
 - Verified with `npx tsc --noEmit` (clean).
 
+### 2026-08-17, part 24 — distribution/storage/security Q&A captured as §12 + D-12
+- No code changed. Added **§12 "Distribution, Local Storage & Security"**
+  (below §11) covering: how app-sandboxed local storage works and that it's
+  the permanent, standard model for production apps (not a temporary/dev-only
+  thing); the exact risk difference between running through Expo Go today vs.
+  a real installed build; step-by-step EAS Build instructions for this
+  specific project; how to ship updates (native rebuild vs. OTA via
+  `expo-updates`) without losing on-device data; and why authentication isn't
+  needed yet. Logged as **D-12** in the Decision Log (§6).
+- Corrected **D-10**: it referenced checklist as the new-note default, which
+  part 20 (2026-08-17) already reverted back to plain text — added an update
+  note rather than rewriting the original decision's history.
+
+### 2026-08-17, part 23 — "Delete this category?" panel: font size + icon alignment
+- **"Cancel" now uses `type="small"`** (14px, matching every other label in
+  the panel) — it had no `type` prop, so it fell back to `ThemedText`'s
+  16px `default` preset and visibly stood out as bigger than "Delete."
+- **Warning row (`CircleAlert` + "All notes in this category…")** switched
+  from `alignItems: 'flex-start'` to `'center'` — flex-start top-aligned the
+  16px icon with the text block, but the text's own line-height padding sat
+  it visually lower than the icon's true center; `'center'` aligns the
+  icon's midpoint with the text's midpoint instead.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-17, part 22 — red ✕ swapped for a red trash-can icon on delete rows
+- Every "this row deletes something" option that used a red `X` now uses a
+  red `Trash2` icon instead: "Delete note" (`note/[id].tsx`), "Delete
+  category" (folder options panel) and the "Delete" row in the "Delete this
+  category?" confirmation panel (both `folder/[id].tsx`). The ✕ is now
+  reserved purely for "dismiss this panel," never for a delete action, in
+  every panel across the app.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-17, part 21 — "Delete this note?" converted to an in-app panel
+- Last remaining `Alert.alert` confirmation in `note/[id].tsx` — replaced
+  with a panel matching the folder screen's "Delete this category?" panel:
+  ✕ top-right to dismiss, and a red ✕ ahead of a "Delete note" row (text
+  changed from the old Alert's bare "Delete") as the only other action. The
+  trash-can header button now toggles `showDeleteConfirm` instead of calling
+  `Alert.alert` directly; `handleDelete()` performs the actual delete.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-17, part 20 — category input contrast, delete-category panel, new-note default, daily schedule add-item
+- **Category name input (both "Add new category" and "Edit category")**: text
+  and border color were hard-coded, so typed text stayed black and was
+  invisible against a dark panel. Both now use `theme.text` for text/border
+  and a dimmed `theme.text` for the placeholder, so they're legible in either
+  mode.
+- **Folder screen header trigger**: the "⋯" glyph replaced with a `Pencil`
+  icon (same icon already used for "Edit" elsewhere), still opening the same
+  Edit/Delete options panel.
+- **"Delete this category?" converted from `Alert.alert` to an in-app
+  panel**, matching every other panel's style: ✕ top-right to dismiss, a red
+  `CircleAlert` icon ahead of the "All notes in this category will be
+  permanently deleted." warning text, and a red ✕ ahead of the "Delete"
+  action itself — closable via either "Cancel" or the ✕.
+- **New notes now default to the Plain text template**, not Checklist —
+  `createNote()` in `use-notes-store.tsx` no longer seeds a `templateType:
+  'checklist'` + one empty item; the user picks a template afterward if they
+  want one.
+- **Daily schedule's "+ Add item"**: now flush-left (matches Sum/Costs' "+
+  Add row", which has the same reasoning — no checkbox to align text under)
+  instead of indented like Checklist's, and now appears both above and below
+  the item list (`addChecklistItem` takes an optional `'start' | 'end'`
+  position) so an appointment can be inserted anywhere in the day, not only
+  appended at the end. Checklist keeps its single, indented, end-only button.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-17, part 19 — Sun/Moon header icons are now a true toggle
+- Both `onPress` handlers in `index.tsx`'s header now call
+  `setScheme(scheme === 'dark' ? 'light' : 'dark')` instead of the Sun icon
+  always setting `'light'` and the Moon icon always setting `'dark'`. Before
+  this, tapping the already-active icon was a no-op (correct, since it's
+  already that mode), which read as "only the dimmed/inactive icon does
+  anything" — fixed per feedback so either icon, tapped in either state,
+  flips the theme.
+
+### 2026-08-17, part 18 — ghost tiles lost their border entirely
+- **"Add new category" / "Add new note" (home + folder screen) tiles no
+  longer have any border at all** — the two-layer solid-fill "ring" technique
+  (white outer + `ghostFill` inner) from parts 15–16 was removed per explicit
+  feedback that no border was wanted, not even white. Each tile is now a
+  single `Pressable`/view filled with `ghostFill` directly, no outer layer.
+- `index.tsx`: `ghostOuter`/`ghostInner` styles merged into one `ghostTile`
+  style; `unsortedAddOuter`/`unsortedAddInner` merged into `unsortedAddTile`;
+  the now-unused `GHOST_BORDER` constant removed.
+- `folder/[id].tsx`: `addNoteTileOuter`/`addNoteTileInner` merged into one
+  `addNoteTile` style; `GHOST_BORDER` constant removed.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 17 — folder options panel, red-means-delete convention, more fixes
+- **`DESTRUCTIVE_COLOR` extracted to `constants/theme.ts`** (`#D6453F`) — was a
+  local constant in `note/[id].tsx`; now shared so `folder/[id].tsx` can use
+  the identical tone.
+- **Corrected the ✕ color rule after feedback**: red is reserved for "this
+  removes something" (a checklist item, a calculation row, "Delete
+  category") — a panel's own dismiss-without-doing-anything ✕ (Move to /
+  Note type / folder options) is **not** red, it matches the panel's normal
+  text color. Fixed the two panel-close ✕s in `note/[id].tsx` that had
+  wrongly been made red in the previous pass.
+- **Folder screen's "⋯" menu converted from `Alert.alert` to an inline
+  panel** (`showFolderMenu`), matching `note/[id].tsx`'s panels exactly —
+  same radius/colors, an explicit ✕ instead of a "Cancel" row, a `Pencil`
+  icon next to "Edit" and a red `X` next to "Delete category" so the
+  destructive option reads as different at a glance, not just by position.
+  The actual delete confirmation stays a native `Alert.alert` (only 2
+  buttons, a standard "are you sure" pattern, no reason to convert it).
+- **`editPanel` (folder rename/recolor) radius fixed to `Spacing.two`** —
+  missed in the earlier radius-unification pass since it wasn't one of the
+  panels explicitly named at the time.
+- **Note editor's folder chip gained a `Folder` icon before the category
+  name** (already had `ArrowDownUp` after it); the "Note type" chip's final
+  layout is: type icon → label → pencil (a "Note type:" text prefix was
+  added then removed the same session per follow-up feedback).
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 16 — more polish: ghost-tile border, type-chip text, radius, calc total
+- **Ghost-tile border switched back from grey to white** (`index.tsx`,
+  `folder/[id].tsx`) — grey was a workaround for white rendering invisible
+  under MIUI's Force Dark; retried now that that setting was disabled for
+  Expo Go earlier today (see §8). Flagged in-code to revert if it goes
+  invisible again on-device.
+- **Note-type chip dropped its "Note type:" text prefix** — keeps the current
+  type's icon, its label, and the trailing pencil-edit icon, per feedback
+  that the literal prefix wasn't wanted after all (still shown, briefly, one
+  message earlier in this session).
+- **Panel radius unified**: the appearance/note-type/move-to panels all share
+  one `panel` style, so changing its `borderRadius` (`Spacing.three` →
+  `Spacing.two`) fixed all three at once — same radius now used everywhere
+  in the app (folder cards, note rows, chips, panels).
+- **Sum/Costs total row**: `+`/`=` moved closer to their number (row gap
+  `Spacing.two` → `half`) and both the label and the total value got a
+  bigger font (20px/700 weight, up from the 14px `smallBold` preset) so the
+  total reads with more visual weight than the line items above it.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 15 — note editor color/copy/radius polish
+- **"Move to" panel label** changed from "Move to" to "Move this note to
+  folder:" for clarity.
+- **Note-type chip now reads "Note type: [icon] Plain text [pencil icon]"**
+  (was just the label + a trailing pencil) — always shows the literal prefix
+  "Note type:" plus the current type's own icon before its label.
+- **Colors made semantic instead of all deriving from the note's ink color:**
+  every ✕ (close a panel, remove an item/row) is now a fixed red
+  (`#D6453F`, reused from `FOLDER_COLORS` rather than inventing a new tone);
+  "+ Add item"/"+ Add row" use the app's existing brand blue (`#5B7FE0`, same
+  as the Save button) instead of a dimmed copy of the note's own text color;
+  the Created/Edited footer's alpha dropped further (0.65 → 0.5) to read
+  more distinctly as secondary/muted text rather than a lighter version of
+  the note's primary ink.
+- **Border radius unified**: folder cards (home screen) and the note editor's
+  folder/type chips changed from their larger radii (`Spacing.three`/`four`)
+  to `Spacing.two` — matching `NoteRow`'s (unsorted note box) radius, which
+  didn't change. The "Add new category" ghost tile's inner radius followed
+  suit so it still matches real folder cards next to it in the same grid.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 14 — calculation total row: "+" marker above "="
+- The "+ Add row" row now also carries a **"+" marker**, right-aligned in the
+  exact same column as the "=" on the result row below it (same
+  `calcTotalRow` structure reused for both, with an empty width-matched box
+  standing in for the row that has no number) — reads as "everything above
+  this line adds up to..." directly above the actual "=" total.
+- Result row's leading symbol changed from "+" to **"="**.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 13 — more icon polish, "Move to" panel, layout fixes
+- **`Colors.light.background`** changed from flat white to a soft neutral
+  blue (`#D9E5F0`, darkened once from an initial `#EAF1F7` per feedback) —
+  `backgroundElement` (cards/panels) stays lighter so they still read as
+  elevated above it. Dark mode untouched.
+- **Header titles gained icons**: home screen now shows `LayoutGrid` + "Memo
+  app" (was plain "Memo"); the folder screen shows `Folder` (aliased
+  `FolderIcon` — the bare name collides with the `Folder` data type already
+  imported in that file) before the category name. Both use expo-router's
+  `headerTitle` render-prop instead of the plain `title` string, following
+  the same per-screen `<Stack.Screen options={{...}}>` override pattern
+  `note/[id].tsx`/`folder/[id].tsx` already used for `headerRight`.
+- **Folder chip and note-type chip** (`note/[id].tsx`) dropped their "·
+  change" text in favor of a trailing icon — `ArrowDownUp` and `Pencil`
+  respectively — so `Pencil` moved from §7's "reserved for later" list into
+  actual use.
+- **"Move to" converted from `Alert.alert` to an inline panel** — see the new
+  §7 note under "Icon system: Lucide" for why (same Android button-count
+  issue as the note-type picker).
+- **Calculation row alignment fixes**: `calcAmountInput` gained
+  `paddingRight` so digits aren't flush against the input's own edge; the X
+  button's `marginLeft` increased (Spacing.three → four) for more separation
+  from the number; the total row's value now shares the amount column's
+  exact width/padding plus an invisible spacer mirroring the X button's
+  footprint, so the total lines up directly under the amounts instead of at
+  the row's true right edge. "+ Add row" split into its own
+  `addCalcRowButton` style (flush left) instead of reusing checklist's
+  `addItemRow` (indented to clear a checkbox calculation rows don't have).
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 12 — Lucide icon system replaces emoji UI icons
+- Installed `lucide-react-native` + `react-native-svg` (`npx expo install`).
+- Replaced 🎨/🗑/☀️/🌙/✕/"+" with `Palette`/`Trash2`/`Sun`/`Moon`/`X`/
+  `FolderPen`/`NotepadText` across `index.tsx`, `folder/[id].tsx`,
+  `note/[id].tsx`; added an icon (`TextAlignJustify`/`ListTodo`/
+  `CalendarCheck2`/`SquarePlus`) before each label in the note-type panel.
+  Full mapping and rationale in §7 "Icon system: Lucide".
+- Two emoji intentionally left as-is (no icon chosen yet by the user):
+  "⊘ None" background swatch, "⋯" folder options menu.
+- Six icons reserved for not-yet-built features (`Mic`, `CalendarDays`,
+  `Mail`, `Forward`, `Download`, `Pencil`) so later work reaches for the same
+  ones instead of re-deciding.
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 11 — calculation template polish (naming + input UX)
+- **Renamed the UI label** from "Calculation" to **"Sum / Costs"** (internal
+  `templateType` value stays `'calculation'` — only the display label
+  changed, so no data/schema migration needed).
+- **Amount field now opens the numeric keyboard** (`keyboardType="numeric"`)
+  and **filters input as you type** — a new `sanitizeAmountInput()` strips
+  anything that isn't a digit, keeps at most one leading "-", and at most one
+  decimal separator (comma or dot), so pasting or typing letters can't get
+  into the field at all rather than only being ignored at sum time.
+- **More space before each row's ✕**: it previously sat directly against the
+  amount field using the row's normal gap, making it easy to fat-finger while
+  adjusting a number. Gave calculation rows their own `calcRow` style (split
+  off from the shared `checklistRow`) with extra `marginLeft` on the ✕
+  specifically, without changing spacing for checklist/daily-schedule rows.
+- Verified with `npx tsc --noEmit` (clean). Not yet re-tested on-device.
+
+### 2026-08-15, part 10 — bug fix: "Calculation" missing from the type picker
+- Reported: after shipping the calculation template, the "Note type" picker
+  still only showed Plain text / Checklist / Daily schedule — no Calculation,
+  and no way to dismiss the picker without choosing one.
+- **Root cause: not a stale bundle** (the initial suspicion, given the recent
+  Fast-Refresh/SQLite incident) — the code was correct. The real cause is a
+  documented React Native limitation: `Alert.alert` on Android does not
+  reliably render more than ~3 buttons. The picker used
+  `Alert.alert('Note type', undefined, [...4 type buttons, Cancel])` — 5
+  buttons — and Android was silently dropping one rather than erroring.
+- **Fix:** replaced the `Alert.alert`-based picker with an inline panel
+  (`note/[id].tsx`), reusing the exact pattern already established for the
+  🎨 background/text-color picker — a `ThemedView` card toggled by the "Type"
+  chip, each option as its own row (current type highlighted), plus an
+  explicit ✕ in the panel header so it can be closed without selecting
+  anything. This also resolves the "can't close without picking" complaint,
+  and avoids the same button-count ceiling if a 5th type (Kanban) is ever
+  added to the list.
+- Verified with `npx tsc --noEmit` (clean). Not yet re-tested on-device.
+
+### 2026-08-15, part 9 — REQ-08 (calculation template type)
+- **`CalculationRow` type** (`id`, `description`, `amount: string`) added
+  alongside `ChecklistItem`; `TemplateType` gained `'calculation'`.
+- **`db.ts`:** new `calculation_rows` table (id, note_id FK CASCADE, position,
+  description, amount) — a brand-new table needs no `ALTER TABLE` migration,
+  unlike the two earlier column additions.
+- **`storage.ts`:** `getAllNotes()` bulk-loads calculation rows the same way
+  it already does checklist items; new `getCalculationRows`/
+  `replaceCalculationRows` (same delete-all-then-reinsert-in-order pattern).
+- **New `src/lib/calculation.ts`:** `parseAmount`/`sumCalculationRows`/
+  `formatSum` extracted into their own module rather than left inside
+  `note/[id].tsx`, since the note preview row needs the identical total —
+  duplicating the parsing logic risked the editor and the list ever showing
+  two different totals for the same note.
+- **`note/[id].tsx`:** added the calculation row UI (description + amount
+  inputs, ✕ remove, "+ Add row", a ruled divider, a total row with a fixed
+  "+" label — see D-11 for why it's not a switchable operator) and the
+  conversion functions for all 6 new directed type-pairs touching
+  calculation. Refactored the autosave/flush persistence logic behind one
+  shared `persistFor(type, ...)` helper (previously duplicated between the
+  debounce effect and the unmount-flush effect) now that there are three
+  content "shapes" (content string / items / calc rows) instead of two.
+- **`note-row.tsx`:** preview for calculation notes shows the total plus row
+  descriptions, e.g. "= 42.50 · rent, groceries".
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
+
+### 2026-08-15, part 8 — bug fixes found while testing REQ-08 on-device
+- **Data-loss scare, root-caused as a stuck SQLite connection, not lost
+  data:** after adding the daily-schedule migration, the app on the author's
+  phone started throwing `NativeDatabase.execAsync`/`prepareAsync` "rejected"
+  errors on every write, and the home screen appeared empty (folders/notes
+  "gone"). Root cause: a stale native SQLite handle surviving Fast Refresh
+  across a long dev session (confirmed by a Force Stop of Expo Go, not just
+  swipe-closing it, clearing the issue) — since writes were failing too, no
+  actual `DELETE` had succeeded; the UI just couldn't read the file this
+  session. No data was actually lost.
+- **Two real robustness bugs found and fixed while diagnosing this:**
+  1. `db.ts`'s `getDb()` cached a **rejected** promise forever once the first
+     `openAndPrepareDb()` call failed — every later call got the same stale
+     rejection instead of retrying, so one transient failure permanently
+     broke the DB connection for the rest of the JS session. Fixed: clear
+     the cached promise on failure so the next call retries fresh.
+  2. `use-notes-store.tsx`'s startup load had no `try/catch` — a failure
+     left `loading` stuck `true` forever and, worse, meant a DB read failure
+     could never be distinguished from "fresh install" (both would otherwise
+     fall through similarly). Fixed: failures are now caught, logged loudly,
+     and explicitly do **not** fall into the first-launch seed branch —
+     seeding only ever happens on an actual confirmed-empty read, never as a
+     side effect of an error.
+  3. Also added per-stage error labeling in `db.ts` (`step()` helper) so a
+     future failure names exactly which part of `openAndPrepareDb` broke
+     instead of a bare native `NullPointerException` with no context.
+
 ### 2026-08-15, part 7 — REQ-08 (daily schedule template type)
 - **`ChecklistItem` gained an optional `time?: string` field** and
   `TemplateType` gained `'daily_schedule'` (`src/lib/types.ts`) — daily
@@ -1032,3 +1438,100 @@ Memo/
   into Introduction / Overall Description / Functional & Non-Functional
   Requirements / Decision Log / Technical Design Notes / Known Issues / Roadmap /
   Revision History.
+
+## 12. Distribution, Local Storage & Security
+
+Added 2026-08-17 (part 24) in response to direct questions about whether the app
+is safe for real users to start relying on today, and how to get it onto their
+phones. See D-12.
+
+### 12.1 How local storage actually works (and why it's not "temporary")
+
+Every note/folder lives in a SQLite database (`expo-sqlite`, see `db.ts`) inside
+the app's own **OS-managed sandbox** — a private storage directory that only this
+app's process can read or write (Android enforces this per-UID; iOS uses a
+per-app container). This is not a dev-only or temporary mechanism: it is the
+standard, permanent storage model virtually every production mobile app uses
+for local data (Signal's local message store, Notes apps, offline caches in
+Notion/Slack, etc. all work this way). It survives app restarts, phone reboots,
+and in-place app updates. It is only erased if the user uninstalls the app,
+manually clears the app's storage/data via OS settings, or factory-resets the
+phone — never as a side effect of normal use.
+
+### 12.2 Today's actual risk: Expo Go, not sandboxing itself
+
+The one caveat specific to *today's* setup: the app currently only runs inside
+**Expo Go** (a shared dev-client app), so Memo's data sits in Expo Go's sandbox,
+not a sandbox of its own. If a user clears Expo Go's app storage/cache in
+Android settings — plausible, since it looks like a generic "app" to them — it
+would wipe every Expo project's local data running under Expo Go, Memo's
+included. This risk goes away once the app is a real standalone build (§12.3),
+which gets its own dedicated sandbox like any other installed app. Either way,
+there is currently no cloud backup: an uninstalled app, lost phone, or factory
+reset means the notes are gone for good, with no recovery path. Worth being
+explicit about with early testers before they put anything they'd mind losing
+into the app.
+
+### 12.3 Getting a real, installable build: EAS Build steps
+
+These are the exact steps for this project as it stands (no `eas.json` and no
+`android.package` set yet — first-time setup):
+
+1. Create a free Expo account at expo.dev if you don't have one.
+2. Install the EAS CLI: `npm install -g eas-cli` (or prefix every command below
+   with `npx` instead of installing globally).
+3. `eas login` — authenticate the CLI once.
+4. From the project root: `eas build:configure` — creates `eas.json` and links
+   the project to an EAS project id (written into `app.json`). Choose Android
+   when prompted (iOS needs an Apple Developer account — skip it for now).
+5. Set a real Android package name in `app.json` under `"android": {
+   "package": "com.<yourname>.memo" }` (reverse-DNS style, e.g.
+   `com.mbrezovic.memo`) — **pick this once and don't change it later**: Android
+   treats a changed package name as a *different app*, so future updates
+   wouldn't be recognized as updates to the same install and testers' data
+   wouldn't carry over.
+6. In `eas.json`, make sure the `preview` profile builds an installable `.apk`
+   (not the Play-Store-only `.aab`):
+   ```json
+   "preview": { "android": { "buildType": "apk" } }
+   ```
+7. Run `eas build --platform android --profile preview`. This builds in Expo's
+   cloud (10-20 minutes); no local Android SDK needed.
+8. When it finishes, EAS gives a download link/QR code. Anyone opens it on an
+   Android phone's browser and installs the `.apk` directly (Android will ask
+   to allow installs from that source once — a standard, expected prompt).
+
+Once this works and testing goes well, the natural next step is Google Play's
+**Internal Testing** track, which adds proper auto-updates without testers
+re-downloading APKs by hand.
+
+### 12.4 Shipping updates without losing data or adding risk
+
+Two different kinds of update, both safe for on-device data if done right:
+
+- **Native rebuild** (new `.apk` via `eas build` again) — needed whenever a new
+  *native* dependency is added (e.g. a package requiring native code). As long
+  as the package name and signing key stay the same (EAS handles signing
+  automatically per project), Android treats it as an update-in-place and
+  on-device data is preserved.
+- **OTA / JS-only update** (`expo-updates`) — pushes JavaScript/UI changes
+  directly to already-installed apps, no new `.apk`, no app-store review. Worth
+  setting up once there's a standalone build, since most of this project's
+  changes so far have been JS/UI-only and wouldn't need a full rebuild.
+
+Either way, the existing SQLite migration pattern (`db.ts`'s `PRAGMA
+table_info` guarded `ALTER TABLE`, never `DROP`) must stay **additive-only** —
+this is the actual data-safety guarantee across updates, not the update
+mechanism itself. A schema change that drops or renames a column/table without
+a migration step would destroy real users' data on their next update.
+
+### 12.5 Why authentication isn't needed yet
+
+There is currently no server anywhere in this app — nothing a login could
+protect. The real security boundary today is the OS app sandbox (§12.1), which
+already exists for free and requires no design work. Authentication becomes
+necessary specifically when Phase C (D-06/D-09) introduces a real backend for
+cross-device sync — that is the point where "whose data is this" becomes a
+question with a real answer to protect. Building auth before that would add
+genuine complexity (credential storage, token handling, attack surface) with no
+corresponding data to secure yet. See D-12.

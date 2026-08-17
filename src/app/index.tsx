@@ -1,6 +1,7 @@
 // Home screen: a two-column grid of folders (plus "add" tiles) and, below it,
 // any unsorted notes waiting to be filed into a category.
 import { Stack, useRouter } from 'expo-router';
+import { FolderPen, LayoutGrid, Moon, NotepadText, Sun } from 'lucide-react-native';
 import { useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,9 +18,6 @@ import { Folder, FolderColor } from '@/lib/types';
 
 // Sentinel id for the always-visible "add category" tile appended to the grid.
 const ADD_CATEGORY_TILE_ID = '__add-category-tile__';
-
-// "Border" thickness for the ghost tiles (see ghostInner below).
-const GHOST_BORDER = 2;
 
 // A grid cell is either a real folder or the add-category sentinel, tagged
 // with `kind` so renderItem can branch on it without ambiguity.
@@ -108,13 +106,25 @@ export default function FoldersScreen() {
           persisted manual choice, see use-theme-preference.tsx for why. */}
       <Stack.Screen
         options={{
+          headerTitle: () => (
+            <View style={styles.headerTitleRow}>
+              <LayoutGrid size={20} color={theme.text} />
+              <ThemedText type="default" style={{ color: theme.text }}>
+                Memo app
+              </ThemedText>
+            </View>
+          ),
           headerRight: () => (
             <View style={styles.themePicker}>
-              <Pressable onPress={() => setScheme('light')} hitSlop={10}>
-                <ThemedText style={[styles.themeIcon, { opacity: scheme === 'light' ? 1 : 0.35 }]}>☀️</ThemedText>
+              {/* Both icons are the same toggle, not two separate "pick this
+                  mode" buttons — tapping either one flips light/dark, so
+                  there's no dead icon that requires tapping the *other* one
+                  to do anything. */}
+              <Pressable onPress={() => setScheme(scheme === 'dark' ? 'light' : 'dark')} hitSlop={10}>
+                <Sun size={24} color={scheme === 'light' ? theme.text : withAlpha(theme.text, 0.35)} />
               </Pressable>
-              <Pressable onPress={() => setScheme('dark')} hitSlop={10}>
-                <ThemedText style={[styles.themeIcon, { opacity: scheme === 'dark' ? 1 : 0.35 }]}>🌙</ThemedText>
+              <Pressable onPress={() => setScheme(scheme === 'dark' ? 'light' : 'dark')} hitSlop={10}>
+                <Moon size={24} color={scheme === 'dark' ? theme.text : withAlpha(theme.text, 0.35)} />
               </Pressable>
             </View>
           ),
@@ -129,10 +139,11 @@ export default function FoldersScreen() {
             <TextInput
               autoFocus
               placeholder="Category name"
+              placeholderTextColor={withAlpha(theme.text, 0.5)}
               value={name}
               onChangeText={setName}
               onSubmitEditing={handleCreate}
-              style={styles.input}
+              style={[styles.input, { color: theme.text, borderColor: theme.text }]}
             />
             {/* Color picker: selected swatch gets a highlighted border. */}
             <View style={styles.colorRow}>
@@ -172,26 +183,15 @@ export default function FoldersScreen() {
           renderItem={({ item }) => {
             if (item.kind === 'add-category') {
               return (
-                // "Border" built from two stacked solid fills (outer = grey,
-                // inner = the card color) instead of borderWidth/borderColor —
-                // see the ghostOuter/ghostInner comment below for why. Grey
-                // instead of white/theme.text: white (both via theme.text and
-                // as a hardcoded literal) rendered invisible on the author's
-                // device specifically for this backgroundColor usage — likely
-                // Android's "Force Dark" auto-darkening near-white colors,
-                // unconfirmed. Mid-grey (#999999) is dark enough to be left
-                // alone by that heuristic while still reading as light/neutral.
+                // Borderless "ghost" tile — same fill as the panel background
+                // (ghostFill) so it reads as an empty slot, not a bordered box.
                 <Pressable
-                  style={[styles.folderCard, styles.ghostOuter, { width: cardWidth, backgroundColor: '#999999E6' }]}
+                  style={[styles.folderCard, styles.ghostTile, { width: cardWidth, backgroundColor: ghostFill }]}
                   onPress={() => setIsAdding(true)}>
-                  <View style={[styles.ghostInner, { backgroundColor: ghostFill }]}>
-                    <ThemedText type="subtitle" style={{ color: theme.text }}>
-                      +
-                    </ThemedText>
-                    <ThemedText type="small" style={{ color: theme.text }}>
-                      Add new category
-                    </ThemedText>
-                  </View>
+                  <FolderPen size={30} color={theme.text} />
+                  <ThemedText type="small" style={{ color: theme.text }}>
+                    Add new category
+                  </ThemedText>
                 </Pressable>
               );
             }
@@ -220,16 +220,12 @@ export default function FoldersScreen() {
               {/* Full-width ghost tile, same shape as a note row — always
                   visible here, above any existing unsorted notes. */}
               <Pressable
-                style={[styles.unsortedAddOuter, { backgroundColor: '#999999E6' }]}
+                style={[styles.unsortedAddTile, { backgroundColor: ghostFill }]}
                 onPress={handleCreateUnsortedNote}>
-                <View style={[styles.unsortedAddInner, { backgroundColor: ghostFill }]}>
-                  <ThemedText type="smallBold" style={{ color: theme.text }}>
-                    +
-                  </ThemedText>
-                  <ThemedText type="small" style={{ color: theme.text }}>
-                    Add new note
-                  </ThemedText>
-                </View>
+                <NotepadText size={22} color={theme.text} />
+                <ThemedText type="small" style={{ color: theme.text }}>
+                  Add new note
+                </ThemedText>
               </Pressable>
               {unsorted.map((n) => (
                 <NoteRow
@@ -251,13 +247,10 @@ export default function FoldersScreen() {
 // consistent across screens.
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  // Larger gap (Spacing.three) than a typical icon row keeps the two 24px
+  // icons' hitSlop zones from overlapping.
   themePicker: { flexDirection: 'row', gap: Spacing.three, alignItems: 'center' },
-  // Bigger than the default 16px text size — a header icon that small is a
-  // real tap-accuracy problem on a phone; hitSlop alone doesn't grow the
-  // visible/perceived target, which is what actually matters for finding it
-  // by eye. Larger gap (Spacing.three, up from two) keeps the two enlarged
-  // tap targets' hitSlop zones from overlapping.
-  themeIcon: { fontSize: 26 },
   safeArea: { flex: 1, paddingHorizontal: Spacing.three },
   list: { paddingTop: Spacing.three, paddingBottom: Spacing.six, gap: Spacing.three },
   row: { gap: Spacing.three },
@@ -270,28 +263,20 @@ const styles = StyleSheet.create({
   // alone as the last, odd one out, with symmetric margins on any screen.
   folderCard: {
     minHeight: 110,
-    borderRadius: Spacing.three,
+    // Matches NoteRow's radius (Spacing.two) rather than the softer
+    // Spacing.three it used before — folder cards and note rows now read as
+    // the same family of "box" across the app instead of two different
+    // roundnesses.
+    borderRadius: Spacing.two,
     padding: Spacing.three,
     justifyContent: 'space-between',
   },
   // Text color is always set inline (auto-contrast against the card color),
   // so only the non-color styling lives here.
   folderName: { fontWeight: '700' },
-  // Ghost tile "border": two stacked solid-color views instead of
-  // borderWidth/borderColor. RN's native border rendering (border + rounded
-  // corners + a fill) looked inconsistently washed-out/transparent on
-  // Android across several attempts; a padded outer fill containing a
-  // slightly-inset inner view filled with the card color can't render as
-  // "transparent" — it's just two opaque rectangles. Now that folderCard has
-  // a fixed width (see above) rather than flex:1, this tile's own padding no
-  // longer needs to match a real folder card's — a fixed-width box is the
-  // same size regardless of its own padding, so ghostOuter can safely differ.
-  ghostOuter: {
-    padding: GHOST_BORDER, // border thickness
-  },
-  ghostInner: {
-    flex: 1,
-    borderRadius: Spacing.three - GHOST_BORDER, // inner radius = outer radius minus border thickness, so the ring is even at the corners
+  // Borderless "ghost" tile — filled with ghostFill (same tone as panel
+  // backgrounds) so it reads as an empty slot rather than a bordered box.
+  ghostTile: {
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.one,
@@ -319,15 +304,11 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
   },
   saveButtonText: { color: '#fff', fontWeight: '700' },
-  // "Add new note" ghost tile in the Unsorted section: same two-layer solid-
-  // fill "border" technique as ghostOuter/ghostInner, but sized like a
-  // NoteRow (full width) instead of a square-ish folder card.
-  unsortedAddOuter: {
+  // "Add new note" ghost tile in the Unsorted section: same borderless fill
+  // as ghostTile, but sized like a NoteRow (full width) instead of a
+  // square-ish folder card.
+  unsortedAddTile: {
     borderRadius: Spacing.two,
-    padding: GHOST_BORDER,
-  },
-  unsortedAddInner: {
-    borderRadius: Spacing.two - GHOST_BORDER,
     padding: Spacing.three,
     gap: Spacing.half,
     alignItems: 'center',

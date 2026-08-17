@@ -5,7 +5,7 @@
 // array" step. The notes store (use-notes-store.tsx) still owns *when* to
 // call these; this module only knows *how* to read and write single rows.
 import { getDb } from '@/lib/db';
-import { ChecklistItem, Folder, FolderColor, Note, TemplateType } from '@/lib/types';
+import { CalculationRow, ChecklistItem, Folder, FolderColor, Note, TemplateType } from '@/lib/types';
 
 // SQLite rows are snake_case columns of primitives (no camelCase, no
 // `undefined` — SQLite has NULL); these map a row back to the app's TS types.
@@ -30,6 +30,7 @@ type ChecklistItemRow = {
   done: number;
   time: string | null;
 };
+type CalculationRowRow = { id: string; note_id: string; position: number; description: string; amount: string };
 
 function rowToFolder(row: FolderRow): Folder {
   return { id: row.id, name: row.name, color: row.color as FolderColor, createdAt: row.created_at };
@@ -52,6 +53,10 @@ function rowToNote(row: NoteRow): Note {
 
 function rowToChecklistItem(row: ChecklistItemRow): ChecklistItem {
   return { id: row.id, text: row.text, done: row.done === 1, time: row.time ?? undefined };
+}
+
+function rowToCalculationRow(row: CalculationRowRow): CalculationRow {
+  return { id: row.id, description: row.description, amount: row.amount };
 }
 
 // Template types whose content lives in checklist_items rather than the
@@ -111,9 +116,10 @@ export async function deleteFolderRow(id: string): Promise<void> {
 // screens never need a separate async lookup just to render a preview.
 export async function getAllNotes(): Promise<Note[]> {
   const db = await getDb();
-  const [noteRows, itemRows] = await Promise.all([
+  const [noteRows, itemRows, calcRows] = await Promise.all([
     db.getAllAsync<NoteRow>('SELECT * FROM notes ORDER BY updated_at DESC;'),
     db.getAllAsync<ChecklistItemRow>('SELECT * FROM checklist_items ORDER BY note_id ASC, position ASC;'),
+    db.getAllAsync<CalculationRowRow>('SELECT * FROM calculation_rows ORDER BY note_id ASC, position ASC;'),
   ]);
   const itemsByNoteId = new Map<string, ChecklistItem[]>();
   for (const row of itemRows) {
@@ -121,9 +127,16 @@ export async function getAllNotes(): Promise<Note[]> {
     list.push(rowToChecklistItem(row));
     itemsByNoteId.set(row.note_id, list);
   }
+  const calcRowsByNoteId = new Map<string, CalculationRow[]>();
+  for (const row of calcRows) {
+    const list = calcRowsByNoteId.get(row.note_id) ?? [];
+    list.push(rowToCalculationRow(row));
+    calcRowsByNoteId.set(row.note_id, list);
+  }
   return noteRows.map((row) => {
     const note = rowToNote(row);
     if (ITEM_BASED_TEMPLATE_TYPES.includes(note.templateType)) note.checklistItems = itemsByNoteId.get(note.id) ?? [];
+    if (note.templateType === 'calculation') note.calculationRows = calcRowsByNoteId.get(note.id) ?? [];
     return note;
   });
 }
@@ -149,6 +162,9 @@ export async function insertNote(note: Note): Promise<void> {
   );
   if (ITEM_BASED_TEMPLATE_TYPES.includes(note.templateType) && note.checklistItems?.length) {
     await replaceChecklistItems(note.id, note.checklistItems);
+  }
+  if (note.templateType === 'calculation' && note.calculationRows?.length) {
+    await replaceCalculationRows(note.id, note.calculationRows);
   }
 }
 
@@ -226,6 +242,34 @@ export async function replaceChecklistItems(noteId: string, items: ChecklistItem
       await db.runAsync(
         'INSERT INTO checklist_items (id, note_id, position, text, done, time) VALUES (?, ?, ?, ?, ?, ?);',
         [item.id, noteId, i, item.text, item.done ? 1 : 0, item.time ?? null],
+      );
+    }
+  });
+}
+
+// --- Calculation rows ------------------------------------------------
+
+export async function getCalculationRows(noteId: string): Promise<CalculationRow[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<CalculationRowRow>(
+    'SELECT * FROM calculation_rows WHERE note_id = ? ORDER BY position ASC;',
+    [noteId],
+  );
+  return rows.map(rowToCalculationRow);
+}
+
+// Same delete-all-then-reinsert-in-order approach as replaceChecklistItems,
+// for the same reasons (simpler than diffing, cheap at this app's scale,
+// transaction-wrapped so a note is never left with a partial row list).
+export async function replaceCalculationRows(noteId: string, rows: CalculationRow[]): Promise<void> {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM calculation_rows WHERE note_id = ?;', [noteId]);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      await db.runAsync(
+        'INSERT INTO calculation_rows (id, note_id, position, description, amount) VALUES (?, ?, ?, ?, ?);',
+        [row.id, noteId, i, row.description, row.amount],
       );
     }
   });

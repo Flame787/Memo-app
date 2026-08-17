@@ -99,6 +99,21 @@ async function openAndPrepareDb(): Promise<SQLite.SQLiteDatabase> {
 
     CREATE INDEX IF NOT EXISTS idx_checklist_items_note_id ON checklist_items(note_id);
 
+    -- One row per calculation-template line, ordered within a note by
+    -- 'position'. 'amount' is TEXT, not a number: it's whatever the user
+    -- typed, so it can hold a mid-edit or locale-formatted value without
+    -- forcing early validation (see storage.ts/note editor for how it's
+    -- parsed only when computing the total).
+    CREATE TABLE IF NOT EXISTS calculation_rows (
+      id TEXT PRIMARY KEY NOT NULL,
+      note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      amount TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_calculation_rows_note_id ON calculation_rows(note_id);
+
     -- Small key/value table for one-off flags (first-launch seed, migration
     -- done) instead of a whole extra AsyncStorage key per flag.
     CREATE TABLE IF NOT EXISTS meta (
