@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Memo",
-    "slug": "Memo",
+    "slug": "memo",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -11,6 +11,7 @@
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.marina.memo",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -38,6 +39,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b16334de-4074-4160-86b8-dbfaf448032f"
+      }
+    },
+    "owner": "marbrezs-team"
   }
 }
