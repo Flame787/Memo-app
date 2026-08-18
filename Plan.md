@@ -105,7 +105,7 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-06 | Contacts import | Could | 🔴 Tentative |
 | REQ-07 | Background template gallery | Should | 🔴 Partially done (see bullets) |
 | REQ-08 | Note template types | Must | 🔴 Partially done (plain, checklist, daily schedule, calculation) |
-| REQ-09 | Search | Must/Could | 🔴 Planned (text) / Deferred (voice) |
+| REQ-09 | Search | Must/Could | ✅ Done (text) / 🔴 Deferred (voice) |
 | REQ-10 | Dark/light mode toggle | Should | ✅ Done |
 | REQ-11 | Custom photo backgrounds | Should | 🔴 Planned |
 | REQ-12 | AI assistant | Could | 🔴 Deferred |
@@ -116,8 +116,9 @@ it belongs. The numbering gaps are deliberate, not omissions.
 | REQ-17 | Alarms/notifications | Should | 🔴 Planned |
 
 **Next up:** Phase A is done; Phase B is underway (REQ-10 shipped, REQ-08
-partially shipped — plain, checklist, daily schedule, calculation). Remaining:
-REQ-08's Kanban sub-type, then REQ-09/REQ-11/REQ-14/REQ-16/REQ-17.
+partially shipped — plain, checklist, daily schedule, calculation — REQ-09's
+text search shipped). Remaining: REQ-08's Kanban sub-type, then
+REQ-11/REQ-14/REQ-16/REQ-17 (voice search stays deferred per D-03).
 
 ### ✅ REQ-01 — Categorization (folders)
 **Priority:** Must · **Status:** Done
@@ -256,22 +257,43 @@ conversion — D-01).
   structured content (item arrays) — the largest schema change so far, and the
   main forcing function for the SQLite migration (Phase A, §9).
 
-### 🔴 REQ-09 — Search
-**Priority:** Must (text) / Could (voice) · **Status:** Planned (Phase B, text) /
-Deferred (voice — D-03)
+### ✅ REQ-09 — Search
+**Priority:** Must (text) / Could (voice) · **Status:** Done (text — 2026-08-17,
+part 25) / Deferred (voice — D-03)
 - A persistent search input **pinned at the bottom** of: the homepage, each folder
-  screen, and inside each open note.
-- Homepage/folder search: results listed **in the order found**; tapping one opens
-  that note directly. Results stay visible until the field is cleared (✕ button).
+  screen, and inside each open note — always visible, not opened via a toggle
+  button, per this spec's original wording. Shared component: `search-bar.tsx`.
+- Homepage/folder search: results listed **in the order found** — implemented as
+  filtering the store's already most-recently-updated-first list, so filtering
+  preserves that same order rather than introducing a second ordering rule (D-13).
+  Tapping one opens that note directly. Results stay until the field is cleared
+  (✕ button, same ink color as the rest of the bar — clearing text isn't a
+  destructive action, so it doesn't get the app's delete-red).
+  - Homepage search is **app-wide** (every note, any folder or unsorted) — the
+    folder grid is replaced by a flat result list while there's a query.
+  - Folder-screen search is scoped to that folder's own notes only.
 - In-note search: every match **highlighted**, view **auto-scrolls to the first
-  match**, user scrolls manually for the rest.
+  match**, user scrolls manually for the rest — with one real RN constraint
+  worth documenting (D-13): a `TextInput` can't render styled/highlighted
+  substrings while staying live-editable, so checklist/daily-schedule/
+  calculation rows highlight their whole row's background (their own
+  `TextInput`s stay editable throughout), while the plain-text template swaps
+  its editable `TextInput` for a read-only `Text` with real per-character
+  highlighting *only while actively searching* — clearing the search bar
+  restores the editable input. Auto-scroll position is tracked via each row's
+  own `onLayout` (relative y within the `checklist` container, itself tracked
+  the same way relative to the `ScrollView`), not `measureLayout` against a
+  native scroll node, to sidestep that API's cross-version quirks.
 - **Voice search** (deferred, D-03): a mic button next to the field — tap to
   listen, speak a term, it's transcribed into the field, search runs automatically,
   mic turns itself off. Requires microphone permission and an on-device speech
-  recognition module, which generally does not run in Expo Go (NFR-07).
+  recognition module, which generally does not run in Expo Go (NFR-07) — see §12
+  for the EAS development-build path this actually needs.
 - Search scope depends on REQ-08: once notes have structured content instead of one
-  string, search needs to look inside that structure — another reason this follows
-  the template system, not precedes it.
+  string, search needs to look inside that structure — implemented via
+  `lib/search.ts`'s `noteMatchesQuery`/`textMatchesQuery`, checked per
+  `templateType` (title + item texts for checklist/daily-schedule, title +
+  row description/amount for calculation, title + `content` for plain).
 
 ### ✅ REQ-10 — Dark mode / light mode toggle
 **Priority:** Should · **Status:** Done (2026-08-15, parts 4–5)
@@ -609,6 +631,26 @@ until Phase C (D-06/D-09) actually introduces a backend. Adding auth earlier
 would add real complexity (credential storage, token handling) with no
 matching data to protect yet.
 
+**D-13 — Search (REQ-09, text): result order, and in-note highlighting under a
+real RN constraint.** Two calls made implementing text search 2026-08-17:
+1. *"Results in the order found"* is satisfied by filtering each screen's
+   already-sorted (most-recently-updated-first) note list, rather than
+   inventing a separate "search order." Keeps one ordering convention across
+   the whole app instead of two.
+2. *In-note highlighting hits a real React Native limitation*: a `TextInput`
+   cannot render styled/highlighted substrings while remaining live-editable —
+   its `value` is always plain text, full stop. Resolved per templateType:
+   checklist/daily-schedule/calculation rows highlight their whole row's
+   background (cheap, and their own inputs stay editable the whole time);
+   plain text — a single free-form block, no rows to highlight individually —
+   swaps its editable `TextInput` for a read-only `Text` with true
+   per-character highlighting *only while the search bar has a query*,
+   reverting to the editable input the moment it's cleared. This means plain
+   notes are briefly non-editable while actively searching inside them; every
+   other template type stays editable throughout. A real, disclosed
+   trade-off, not a silently-cut corner — revisit only if it proves confusing
+   in practice.
+
 ## 7. Technical Design & Architecture Notes
 
 *(How the requirements above get built, and why — distinct from the requirements
@@ -745,6 +787,8 @@ explicitly at each call site.
 | `ListTodo` | Note-type option: Checklist |
 | `CalendarCheck2` | Note-type option: Daily schedule |
 | `SquarePlus` | Note-type option: Sum / Costs |
+| `Search` | REQ-09 search bar icon (homepage, folder screen, note editor) |
+| `CircleAlert` | Red warning icon, "Delete this category?" confirmation |
 
 **Also converted while touching this: "Move to" folder picker.** Was an
 `Alert.alert` action sheet — the same Android ~3-button ceiling already hit
@@ -1060,6 +1104,166 @@ Memo/
   Tapping either icon sets that mode directly. `useThemePreference()`'s API
   changed from `toggle()` to `setScheme(value)` to match.
 - Verified with `npx tsc --noEmit` (clean).
+
+### 2026-08-18, part 30 — fixed duplicated times after repeated Daily schedule conversions
+- **Bug**: switching a note's type away from Daily schedule and back
+  (e.g. daily_schedule → plain → checklist → daily_schedule) made each row's
+  time appear twice — once as the assigned time badge, once baked into the
+  item text itself (e.g. the time column showed `05:00` *and* the text
+  started with `05:00 Welcome to the app…`).
+- **Root cause**: `scheduleItemsToPlain` prefixes each line with its time
+  when leaving daily_schedule for plain text, so the information survives
+  the conversion (by design — D-01, never silently drop text) — but nothing
+  on the way *back* into daily_schedule ever looked for that prefix.
+  `itemsToScheduleItems` just reassigned a fresh sequential hour to every
+  item regardless, leaving the old prefix sitting in the text as ordinary
+  content.
+- **Fix**: new `extractLeadingTime(text)` recognizes a leading `"HH:MM "`
+  pattern and pulls it back out as a real time, stripping it from the text.
+  `itemsToScheduleItems` now gives each item with a recovered time its exact
+  original hour slot (first-claim-wins if two collide, or if the hour falls
+  outside the 05:00–22:00 skeleton — the loser becomes an overflow row rather
+  than being dropped, D-01) instead of reassigning hours sequentially;
+  untimed items (the normal checklist/calculation → daily_schedule case,
+  unchanged) still fill whatever hours are left, in order. This makes a full
+  daily_schedule → plain → daily_schedule round trip exactly lossless instead
+  of duplicating.
+- Verified with `npx tsc --noEmit` (clean). Not yet re-tested on-device.
+
+### 2026-08-18, part 29 — fixed mini-scrollbars on wrapped multiline rows
+- Part 28's `multiline` fix wrapped long text instead of overflowing, but on
+  web it grew a small internal scrollbar (tiny ▲▼ arrows) once a row's text
+  passed a couple of lines, instead of the row itself getting taller — ugly,
+  and not what a "just wrap it" fix should do.
+- **Root cause**: a multiline `TextInput` with no explicit `height` auto-
+  sizes to its content natively on iOS/Android (RN measures the text
+  directly), but `react-native-web` renders it as a plain HTML `<textarea>`,
+  which does *not* auto-grow — it keeps a small fixed height and scrolls
+  internally instead, which is exactly the scrollbar look.
+- **Fix**: the standard React Native auto-grow pattern — `onContentSizeChange`
+  (fires on every platform) reports the field's real content height into new
+  state (`rowHeights`, keyed by item/row id), applied back as an explicit
+  `height` style. Wired onto the checklist/daily-schedule item text input and
+  the calculation description input (both can wrap to multiple lines); the
+  calculation amount field doesn't need it (numbers don't wrap). New
+  `ROW_MIN_HEIGHT` constant (24px, ~one line) is the floor before a row's
+  first `onContentSizeChange` fires.
+- Verified with `npx tsc --noEmit` (clean). Not yet re-tested on-device.
+
+### 2026-08-18, part 28 — checklist/schedule/calculation now highlight per match too, and text wraps
+- **Per-substring highlighting for item-based/calculation rows**: these
+  previously highlighted the *whole row's background* on any match, unlike
+  plain text's per-character highlighting — inconsistent, and less precise
+  once a row's text got longer. Extracted the plain-text swap logic into a
+  reusable `HighlightedText` component (wraps `splitByQuery`), now used for
+  checklist/daily-schedule item text and calculation description **and**
+  amount, matching plain text's behavior exactly: each field swaps from its
+  editable `TextInput` to a read-only, per-occurrence-highlighted view only
+  while the search bar has a query. Removed the now-unused whole-row
+  `searchMatchRow` style/logic (D-13 stands, now applied uniformly instead of
+  differently per templateType).
+- **Fixed a real, unrelated bug found while looking at this**: checklist
+  item text, daily-schedule item text, and calculation descriptions were
+  single-line `TextInput`s with no `multiline` prop — long text ran off the
+  row's right edge instead of wrapping, unreadable past a screen-width's
+  worth of characters. Added `multiline` to both. Since a wrapped row can now
+  be taller than its checkbox/time-field/remove-button, `checklistRow`/
+  `calcRow` switched from `alignItems: 'center'` to `'flex-start'` (align to
+  the first line, not the wrapped block's vertical center), with a small
+  `marginTop: 2` on the checkbox, time input, and both remove buttons to
+  visually line them up with that first line.
+- **Follow-up in the same pass**: `matchCount` still counted item-based rows
+  and calculation rows *matching*, not their occurrences — inconsistent once
+  those rows started highlighting per-occurrence too (a plain note showed "9
+  found" for `a`, the same text as a checklist showed "2 found" for the same
+  query). Switched to `items.reduce(...)`/`calcRows.reduce(...)` summing
+  `countOccurrences` per row (both `description` and `amount` for
+  calculation), so the number now means the same thing — total highlighted
+  occurrences — everywhere.
+- Verified with `npx tsc --noEmit` (clean). Not yet re-tested on-device (was
+  checked mid-session in the browser via `npm run web`, part 26).
+
+### 2026-08-18, part 27 — bug fixes found testing REQ-09 in the browser
+- **Crash typing into the homepage search bar**: "Changing numColumns on the
+  fly is not supported." The grid `FlatList` (`numColumns={2}`) and the
+  search-results `FlatList` (no `numColumns`) sit in the same ternary
+  position in `index.tsx` — same component type, same tree position — so
+  React reused one underlying `FlatList` instance across the swap instead of
+  unmounting/remounting, and `FlatList` explicitly rejects changing
+  `numColumns` on an existing instance. Fixed with distinct `key="grid"` /
+  `key="search-results"` props, forcing a real remount instead of a prop diff
+  — exactly what the error message itself suggested.
+- **`SearchBar` sat flush against the screen's bottom edge** — had
+  `marginTop` but no matching `marginBottom`. Added one, symmetric with the
+  top margin; fixes all three usages (homepage, folder screen, note editor)
+  at once since they share the component.
+- **In-note "N found" count stuck at 1** for plain-text notes with more than
+  one match — `matchCount` treated plain content the same as a boolean "does
+  it match at all" (like item-based rows do, correctly, since those highlight
+  a whole row rather than each occurrence). Plain text highlights *every*
+  occurrence individually (D-13), so the count needs to match that. New
+  `lib/search.ts`'s `countOccurrences(text, query)` (non-overlapping,
+  case-insensitive) now backs both the title and plain-content counts;
+  item-based/calculation rows keep counting matching *rows*, since that's
+  what's actually distinguishable on screen for those types.
+- Verified with `npx tsc --noEmit` (clean) and by actually typing into the
+  homepage search bar in the browser (`npm run web`, port 8081 — see part 26).
+
+### 2026-08-18, part 26 — fixed `npm run web` (missing metro.config.js for expo-sqlite)
+- **`npm run web` was failing to bundle** (`Unable to resolve module
+  ./wa-sqlite/wa-sqlite.wasm`) since the SQLite migration (Phase A) —
+  `expo-sqlite`'s web backend (`wa-sqlite`, via OPFS) ships a `.wasm` binary
+  that Metro doesn't treat as a static asset without explicit config, and
+  needs `Cross-Origin-Embedder-Policy`/`Cross-Origin-Opener-Policy` dev-server
+  headers for the `SharedArrayBuffer` it depends on.
+- **New `metro.config.js`** — the exact snippet from Expo's own docs
+  (`docs.expo.dev/static/diffs/sqlite-web-metro-config.diff`, verified by
+  fetching it live rather than recalled from memory): pushes `'wasm'` onto
+  `resolver.assetExts`, and `server.enhanceMiddleware` sets both headers on
+  every dev-server response.
+- Verified by actually starting `npx expo start --web` — bundle now completes
+  clean (2951 modules, no wasm-resolution error). This restores the
+  browser-preview workflow (useful whenever a physical Android device isn't
+  at hand) — the app's real target remains Android (Plan.md §2.1/§12); web
+  was never a supported *distribution* platform, only a convenient local
+  preview.
+
+### 2026-08-17, part 25 — REQ-09 (text search) implemented; voice stays deferred
+- **New `src/lib/search.ts`**: `textMatchesQuery`/`noteMatchesQuery`, one
+  shared case-insensitive match definition used by all three search entry
+  points so "what counts as a hit" can't drift between them. `noteMatchesQuery`
+  checks title plus whichever field actually holds a note's content for its
+  `templateType` (item texts, calculation row description/amount, or plain
+  `content`).
+- **New `src/components/search-bar.tsx`**: the persistent, always-visible
+  search input — a normal flex sibling placed last in a screen's column
+  layout (not `position: absolute`), so it reads as "pinned at the bottom"
+  without keyboard-avoiding/z-index workarounds. Optional `resultCount` prop
+  shows "N found"/"No matches"; its ✕ (clear text) uses the panel's normal
+  ink color, never red (clearing isn't a delete action).
+- **`index.tsx` (homepage)**: search is app-wide — while there's a query, the
+  folder grid is replaced by a flat `NoteRow` list of every matching note
+  (any folder, or unsorted), tapping opens it directly; long-press offers
+  Move-to-folder/Delete (excluding the note's own current folder from the
+  move list) via the same `Alert.alert` pattern the existing note-options
+  menus already use.
+- **`folder/[id].tsx`**: search is scoped to that folder's own notes —
+  filters the existing note `FlatList`'s `data` in place, "No notes found"
+  empty state when a query has zero matches.
+- **`note/[id].tsx`**: the biggest piece — see D-13 for the two real design
+  calls (result order, and the RN TextInput-can't-highlight-while-editable
+  constraint). Checklist/daily-schedule/calculation rows get a highlighted
+  background (amber `SEARCH_HIGHLIGHT_COLOR`) via `onLayout`-tracked
+  positions; auto-scroll targets the first match using each row's own
+  `onLayout` y-offset (relative to the `checklist` container, itself tracked
+  the same way relative to the `ScrollView`) rather than `measureLayout`.
+  Plain-text content swaps to a read-only, per-character-highlighted `Text`
+  (new `splitByQuery` helper) only while actively searching. New
+  `resultCount` hint wired from a derived match count across
+  title+content/items/rows.
+- REQ-09's status flipped to ✅ Done (text) — voice remains 🔴 Deferred (D-03,
+  needs the EAS development-build path in §12).
+- Verified with `npx tsc --noEmit` (clean). Not yet tested on-device.
 
 ### 2026-08-17, part 24 — distribution/storage/security Q&A captured as §12 + D-12
 - No code changed. Added **§12 "Distribution, Local Storage & Security"**

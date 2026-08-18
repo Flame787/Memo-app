@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { NoteRow } from "@/components/note-row"; // row background and text auto-contrasted against it. Shared by the folder screen's note list and the home screen's "unsorted notes" list, so both stay visually and behaviorally identical.
+import { SearchBar } from "@/components/search-bar"; // REQ-09 persistent search bar, shared with the homepage and note editor
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { DESTRUCTIVE_COLOR, FOLDER_COLORS, Spacing } from "@/constants/theme"; // curated palette of harmonious colors for folders, used in the color picker and stored in the database
@@ -23,6 +24,7 @@ import { useNotesStore } from "@/hooks/use-notes-store"; // global notes/folders
 import { useTheme } from "@/hooks/use-theme"; // hook to get the current theme colors (light/dark mode, plus the actual color values for text, background, etc.)
 import { useThemePreference } from "@/hooks/use-theme-preference"; // hook to get the user's system theme preference (light/dark) so we can adjust the ghost tile background color accordingly
 import { withAlpha } from "@/lib/appearance"; // dims a theme color for placeholder text
+import { noteMatchesQuery } from "@/lib/search"; // REQ-09 shared match logic
 import { FolderColor } from "@/lib/types"; // type for the fixed palette of folder colors, used in the color picker and stored in the database
 
 export default function FolderScreen() {
@@ -48,6 +50,12 @@ export default function FolderScreen() {
   const ghostFill = scheme === "dark" ? "#212225" : theme.backgroundElement;
   const folder = getFolder(id); // may be undefined if the folder was just deleted
   const notes = notesInFolder(id); // already sorted most-recent-first by the store
+
+  // REQ-09 (text search; voice deferred, D-03/D-12): filtering an already-
+  // sorted list preserves that same order, satisfying the spec's "results
+  // listed in the order found" without introducing a second ordering rule.
+  const [searchQuery, setSearchQuery] = useState("");
+  const displayedNotes = searchQuery.trim() ? notes.filter((n) => noteMatchesQuery(n, searchQuery)) : notes;
 
   // Local draft state for the rename/recolor panel (seeded from the folder when opened).
   const [isEditing, setIsEditing] = useState(false);
@@ -242,7 +250,7 @@ export default function FolderScreen() {
           </ThemedView>
         )}
         <FlatList
-          data={notes}
+          data={displayedNotes}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
@@ -253,6 +261,13 @@ export default function FolderScreen() {
               onLongPress={() => handleNoteOptions(item.id)}
             />
           )}
+          ListEmptyComponent={
+            searchQuery.trim() ? (
+              <ThemedText themeColor="textSecondary" style={styles.emptySearch}>
+                No notes found.
+              </ThemedText>
+            ) : null
+          }
           // Always-visible borderless tile, full width, after the last real note.
           // Replaces the old floating "+ New note" button.
           ListFooterComponent={
@@ -267,6 +282,10 @@ export default function FolderScreen() {
             </Pressable>
           }
         />
+
+        {/* REQ-09: persistent search, pinned at the bottom, scoped to this
+            folder's own notes. */}
+        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search in this category" />
       </SafeAreaView>
     </ThemedView>
   );
@@ -347,4 +366,5 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
     alignItems: "center",
   },
+  emptySearch: { textAlign: "center", marginTop: Spacing.six },
 });

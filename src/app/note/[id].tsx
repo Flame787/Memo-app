@@ -22,9 +22,20 @@ import {
   type LucideIcon,
 } from 'lucide-react-native';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type TextStyle,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { SearchBar } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { DESTRUCTIVE_COLOR, Spacing } from '@/constants/theme';
@@ -33,6 +44,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { PASTEL_COLORS, TEXT_COLOR_OPTIONS, resolveNoteTextColor, withAlpha } from '@/lib/appearance';
 import { formatSum, sumCalculationRows } from '@/lib/calculation';
 import { makeId } from '@/lib/id';
+import { countOccurrences, textMatchesQuery } from '@/lib/search';
 import { TEMPLATES, getTemplateById, type Template } from '@/lib/templates';
 import type { CalculationRow, ChecklistItem, TemplateType } from '@/lib/types';
 
@@ -50,6 +62,15 @@ const X_ICON_COLOR = DESTRUCTIVE_COLOR;
 // the Save button and selected-swatch rings elsewhere) instead of a dimmed
 // copy of the note's ink color, so they read as an action, not plain text.
 const ADD_ROW_COLOR = '#5B7FE0';
+// REQ-09 in-note search: amber, so a match reads as "found" rather than
+// "error" (red) or "action" (the brand blue above) — a third, distinct
+// semantic color, on purpose.
+const SEARCH_HIGHLIGHT_COLOR = 'rgba(255, 196, 0, 0.35)';
+// Floor for a row's auto-grow height (see rowHeights above) — roughly one
+// line at this screen's fontSize(16)/paddingVertical(Spacing.one×2), so a
+// brand-new empty row isn't shorter than the checkbox/remove-button beside it
+// before its first onContentSizeChange fires.
+const ROW_MIN_HEIGHT = 24;
 
 // The template types offered in the "change type" picker, in display order.
 // 'plain' is listed first even though 'checklist' is the default for *new*
@@ -97,17 +118,61 @@ function checklistItemsToPlain(items: ChecklistItem[]): string {
     .join('\n');
 }
 
-// Checklist -> daily schedule: merge existing non-blank items into the
-// hourly skeleton in order (item N gets hour N); items beyond the skeleton's
-// length are appended at the end with no time rather than dropped. Hours the
-// skeleton has but no item filled stay as empty, ready-to-type rows.
+// Recovers a leading "HH:MM " label from item text — scheduleItemsToPlain
+// (below) prefixes a daily-schedule item's time onto its text rather than
+// dropping it when converting away from daily_schedule; without this, a
+// round trip back into daily_schedule (e.g. daily_schedule -> plain ->
+// daily_schedule) would both leave that label sitting in the text *and*
+// assign a fresh sequential hour on top of it — the text visibly duplicating
+// the time. Any other type's text simply won't match this pattern.
+const LEADING_TIME_RE = /^([0-2]\d:[0-5]\d)\s+(.*)$/;
+function extractLeadingTime(text: string): { time?: string; text: string } {
+  const match = text.match(LEADING_TIME_RE);
+  return match ? { time: match[1], text: match[2] } : { text };
+}
+
+type ScheduleDraftItem = { id: string; text: string; done: boolean; time?: string };
+
+// Checklist -> daily schedule (also plain/calculation -> daily schedule, via
+// their own conversion into plain checklist items first): items whose text
+// carries a recovered time (see extractLeadingTime above) claim that exact
+// hour slot instead of being reassigned one — this is what makes a
+// daily_schedule -> plain -> daily_schedule round trip lossless instead of
+// duplicating times. Items with no recoverable time fill the remaining
+// hours in order, same as before; a duplicate/out-of-range time, or more
+// untimed items than there are empty hours, becomes an overflow row rather
+// than being dropped (Plan.md D-01: best-effort never loses text).
 function itemsToScheduleItems(items: ChecklistItem[]): ChecklistItem[] {
-  const withText = items.filter((i) => i.text.trim());
-  const scheduled = SCHEDULE_HOURS.map((time, i) =>
-    withText[i] ? { ...withText[i], time } : { id: makeId(), text: '', done: false, time },
-  );
-  const overflow = withText.slice(SCHEDULE_HOURS.length).map((i) => ({ ...i, time: undefined }));
-  return [...scheduled, ...overflow];
+  const withText: ScheduleDraftItem[] = items
+    .filter((i) => i.text.trim())
+    .map((i) => {
+      const { time, text } = extractLeadingTime(i.text.trim());
+      return { id: i.id, text, done: i.done, time };
+    });
+  const timed = withText.filter((i) => i.time);
+  const untimed = withText.filter((i) => !i.time);
+
+  // First-claim-wins per hour; a second item recovering the same hour (or an
+  // hour outside the 05:00–22:00 skeleton) falls through to overflow below.
+  const byHour = new Map<string, ScheduleDraftItem>();
+  const overflowTimed: ScheduleDraftItem[] = [];
+  for (const item of timed) {
+    if (item.time && SCHEDULE_HOURS.includes(item.time) && !byHour.has(item.time)) {
+      byHour.set(item.time, item);
+    } else {
+      overflowTimed.push(item);
+    }
+  }
+
+  let untimedIndex = 0;
+  const scheduled = SCHEDULE_HOURS.map((hour) => {
+    const claimed = byHour.get(hour);
+    if (claimed) return claimed;
+    if (untimedIndex < untimed.length) return { ...untimed[untimedIndex++], time: hour };
+    return { id: makeId(), text: '', done: false, time: hour };
+  });
+  const overflowUntimed = untimed.slice(untimedIndex).map((i) => ({ ...i, time: undefined }));
+  return [...scheduled, ...overflowUntimed, ...overflowTimed];
 }
 
 // Daily schedule -> checklist: drop the time label, keep text/done, and drop
@@ -172,6 +237,31 @@ function linesToCalculationRows(lines: string[]): CalculationRow[] {
     : nonBlank.map((description) => ({ id: makeId(), description, amount: '' }));
 }
 
+// REQ-09 in-note search: splits `text` into alternating matched/unmatched
+// runs against `query` (case-insensitive), so the caller can render each run
+// with its own style. Used only for the plain-text template's content — see
+// the render-side comment on why plain text needs this and item-based/
+// calculation rows don't.
+function splitByQuery(text: string, query: string): { text: string; match: boolean }[] {
+  const q = query.trim();
+  if (!q) return [{ text, match: false }];
+  const lower = text.toLowerCase();
+  const qLower = q.toLowerCase();
+  const parts: { text: string; match: boolean }[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const idx = lower.indexOf(qLower, i);
+    if (idx === -1) {
+      parts.push({ text: text.slice(i), match: false });
+      break;
+    }
+    if (idx > i) parts.push({ text: text.slice(i, idx), match: false });
+    parts.push({ text: text.slice(idx, idx + q.length), match: true });
+    i = idx + q.length;
+  }
+  return parts;
+}
+
 // "DD.MM.YYYY." — dots as the date separator, full 4-digit year, including a
 // trailing dot after it.
 function formatDate(ms: number): string {
@@ -224,6 +314,24 @@ function NoteBackground({
   return <ThemedView style={styles.bg}>{children}</ThemedView>;
 }
 
+// REQ-09 in-note search: a read-only stand-in for whatever `TextInput` would
+// normally show `text`, with every occurrence of `query` highlighted (via
+// `splitByQuery`). Used for every searchable field — checklist/daily-
+// schedule item text, calculation description/amount, and plain content —
+// while the search bar has a query, since RN's `TextInput` can't render
+// highlighted substrings and stay live-editable at the same time (D-13).
+function HighlightedText({ text, query, style }: { text: string; query: string; style?: StyleProp<TextStyle> }) {
+  return (
+    <Text style={style}>
+      {splitByQuery(text, query).map((part, idx) => (
+        <Text key={idx} style={part.match ? styles.searchMatchText : undefined}>
+          {part.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
 export default function NoteScreen() {
   const { id } = useLocalSearchParams<{ id: string }>(); // note id from the URL
   const router = useRouter();
@@ -245,6 +353,18 @@ export default function NoteScreen() {
   const [showTypePicker, setShowTypePicker] = useState(false); // "Note type" panel toggle
   const [showMovePicker, setShowMovePicker] = useState(false); // "Move to" panel toggle
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false); // "Delete this note?" panel toggle
+  // REQ-09 (text search; voice deferred, D-03/D-12): a persistent search bar
+  // scoped to this one open note.
+  const [searchQuery, setSearchQuery] = useState('');
+  // Auto-grow height for multiline row fields (checklist/daily-schedule item
+  // text, calculation description), keyed by item/row id. Native RN measures
+  // a multiline TextInput's content height itself when no explicit height is
+  // set, but react-native-web's underlying <textarea> doesn't — it stays at
+  // a small fixed height and scrolls internally instead of growing, which is
+  // exactly the "mini scrollbar" look. `onContentSizeChange` (fired on every
+  // platform) reports the real content height so this can be applied as an
+  // explicit style on both, making the two platforms behave the same way.
+  const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const folder = getFolder(note?.folderId ?? ''); // folder chip shown at the top
 
   // Appearance is read live from the store (not local state) so a pick in the
@@ -257,6 +377,16 @@ export default function NoteScreen() {
     fallback: theme.text, // plain note -> normal theme text color
   });
   const placeholderColor = withAlpha(textColor, 0.5);
+
+  // REQ-09 auto-scroll-to-first-match: each checklist/calc row reports its
+  // own y offset (relative to the `checklist` container) via onLayout, and
+  // the container itself reports its y offset within the ScrollView the same
+  // way — added together, that's the row's position within the scrollable
+  // content. Simpler and more portable than `measureLayout` against a native
+  // scroll-view node, which has fiddly cross-version quirks.
+  const scrollRef = useRef<ScrollView>(null);
+  const rowYRef = useRef<Record<string, number>>({});
+  const checklistYRef = useRef(0);
 
   // Keep the latest values in refs so the debounce timer and the unmount
   // flush always save what's actually on screen, never a stale closure.
@@ -326,6 +456,53 @@ export default function NoteScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // REQ-09: derived match state for the search bar below. `firstMatchId`
+  // drives auto-scroll (item-based/calculation only — plain text has no rows
+  // to scroll to, see the render-side comment on why it's handled
+  // differently); `matchCount` feeds the search bar's "N found" hint.
+  const trimmedQuery = searchQuery.trim();
+  const isSearching = trimmedQuery.length > 0;
+  const firstMatchId = isSearching
+    ? isItemBased(templateType)
+      ? items.find((item) => textMatchesQuery(item.text, trimmedQuery))?.id
+      : templateType === 'calculation'
+        ? calcRows.find(
+            (row) => textMatchesQuery(row.description, trimmedQuery) || textMatchesQuery(row.amount, trimmedQuery),
+          )?.id
+        : undefined
+    : undefined;
+  // Every searchable field now highlights per occurrence, not per row/field
+  // (see HighlightedText below), so the count has to match that everywhere
+  // too — total occurrences across title + whichever field holds this
+  // templateType's content, not a count of matching rows.
+  const matchCount = isSearching
+    ? countOccurrences(title, trimmedQuery) +
+      (isItemBased(templateType)
+        ? items.reduce((sum, item) => sum + countOccurrences(item.text, trimmedQuery), 0)
+        : templateType === 'calculation'
+          ? calcRows.reduce(
+              (sum, row) => sum + countOccurrences(row.description, trimmedQuery) + countOccurrences(row.amount, trimmedQuery),
+              0,
+            )
+          : countOccurrences(content, trimmedQuery))
+    : 0;
+
+  // Scroll to the first match whenever the query (or which row matches)
+  // changes. Item-based/calculation rows report their layout via onLayout
+  // (see rowYRef/checklistYRef above); plain text has no per-row target, so
+  // it just scrolls to the top of the content area, where the highlighted
+  // (read-only while searching — see the render-side comment) text starts.
+  useEffect(() => {
+    if (!isSearching) return;
+    if (firstMatchId !== undefined) {
+      const y = checklistYRef.current + (rowYRef.current[firstMatchId] ?? 0);
+      scrollRef.current?.scrollTo({ y: Math.max(y - Spacing.three, 0), animated: true });
+    } else if (templateType === 'plain' && textMatchesQuery(content, trimmedQuery)) {
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, firstMatchId]);
 
   // Switch template type: converts existing content best-effort (Plan.md
   // D-01) rather than discarding it, and persists immediately — this is a
@@ -652,7 +829,7 @@ export default function NoteScreen() {
             </ThemedView>
           )}
 
-          <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+          <ScrollView ref={scrollRef} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
             <TextInput
               placeholder="Title"
               placeholderTextColor={placeholderColor}
@@ -661,7 +838,11 @@ export default function NoteScreen() {
               style={[styles.titleInput, { color: textColor }]}
             />
             {isItemBased(templateType) ? (
-              <View style={styles.checklist}>
+              <View
+                style={styles.checklist}
+                onLayout={(e: LayoutChangeEvent) => {
+                  checklistYRef.current = e.nativeEvent.layout.y;
+                }}>
                 {/* Daily schedule can insert an appointment anywhere, so it
                     gets an "+ Add item" above the list too, flush left like
                     the rest of the row (no checkbox to align text under) —
@@ -674,7 +855,12 @@ export default function NoteScreen() {
                   </Pressable>
                 )}
                 {items.map((item) => (
-                  <View key={item.id} style={styles.checklistRow}>
+                  <View
+                    key={item.id}
+                    style={styles.checklistRow}
+                    onLayout={(e: LayoutChangeEvent) => {
+                      rowYRef.current[item.id] = e.nativeEvent.layout.y;
+                    }}>
                     {templateType === 'daily_schedule' && (
                       <TextInput
                         placeholder="00:00"
@@ -690,18 +876,35 @@ export default function NoteScreen() {
                       style={[styles.checkbox, { borderColor: withAlpha(textColor, 0.5) }]}>
                       {item.done && <View style={[styles.checkboxFill, { backgroundColor: textColor }]} />}
                     </Pressable>
-                    <TextInput
-                      placeholder="List item"
-                      placeholderTextColor={placeholderColor}
-                      value={item.text}
-                      onChangeText={(text) => updateChecklistItemText(item.id, text)}
-                      style={[
-                        styles.checklistInput,
-                        { color: textColor },
-                        item.done && styles.checklistInputDone,
-                      ]}
-                    />
-                    <Pressable onPress={() => removeChecklistItem(item.id)} hitSlop={8}>
+                    {isSearching ? (
+                      <HighlightedText
+                        text={item.text}
+                        query={trimmedQuery}
+                        style={[
+                          styles.checklistInput,
+                          { color: textColor },
+                          item.done && styles.checklistInputDone,
+                        ]}
+                      />
+                    ) : (
+                      <TextInput
+                        placeholder="List item"
+                        placeholderTextColor={placeholderColor}
+                        value={item.text}
+                        onChangeText={(text) => updateChecklistItemText(item.id, text)}
+                        multiline
+                        onContentSizeChange={(e) => {
+                          const h = e.nativeEvent.contentSize.height;
+                          setRowHeights((prev) => (prev[item.id] === h ? prev : { ...prev, [item.id]: h }));
+                        }}
+                        style={[
+                          styles.checklistInput,
+                          { color: textColor, height: Math.max(ROW_MIN_HEIGHT, rowHeights[item.id] ?? ROW_MIN_HEIGHT) },
+                          item.done && styles.checklistInputDone,
+                        ]}
+                      />
+                    )}
+                    <Pressable onPress={() => removeChecklistItem(item.id)} hitSlop={8} style={styles.rowRemoveButton}>
                       <X size={16} color={X_ICON_COLOR} />
                     </Pressable>
                   </View>
@@ -715,24 +918,57 @@ export default function NoteScreen() {
                 </Pressable>
               </View>
             ) : templateType === 'calculation' ? (
-              <View style={styles.checklist}>
+              <View
+                style={styles.checklist}
+                onLayout={(e: LayoutChangeEvent) => {
+                  checklistYRef.current = e.nativeEvent.layout.y;
+                }}>
                 {calcRows.map((row) => (
-                  <View key={row.id} style={styles.calcRow}>
-                    <TextInput
-                      placeholder="Description"
-                      placeholderTextColor={placeholderColor}
-                      value={row.description}
-                      onChangeText={(text) => updateCalculationRowDescription(row.id, text)}
-                      style={[styles.calcDescInput, { color: textColor }]}
-                    />
-                    <TextInput
-                      placeholder="0"
-                      placeholderTextColor={placeholderColor}
-                      value={row.amount}
-                      onChangeText={(text) => updateCalculationRowAmount(row.id, text)}
-                      keyboardType="numeric"
-                      style={[styles.calcAmountInput, { color: textColor }]}
-                    />
+                  <View
+                    key={row.id}
+                    style={styles.calcRow}
+                    onLayout={(e: LayoutChangeEvent) => {
+                      rowYRef.current[row.id] = e.nativeEvent.layout.y;
+                    }}>
+                    {isSearching ? (
+                      <HighlightedText
+                        text={row.description}
+                        query={trimmedQuery}
+                        style={[styles.calcDescInput, { color: textColor }]}
+                      />
+                    ) : (
+                      <TextInput
+                        placeholder="Description"
+                        placeholderTextColor={placeholderColor}
+                        value={row.description}
+                        onChangeText={(text) => updateCalculationRowDescription(row.id, text)}
+                        multiline
+                        onContentSizeChange={(e) => {
+                          const h = e.nativeEvent.contentSize.height;
+                          setRowHeights((prev) => (prev[row.id] === h ? prev : { ...prev, [row.id]: h }));
+                        }}
+                        style={[
+                          styles.calcDescInput,
+                          { color: textColor, height: Math.max(ROW_MIN_HEIGHT, rowHeights[row.id] ?? ROW_MIN_HEIGHT) },
+                        ]}
+                      />
+                    )}
+                    {isSearching ? (
+                      <HighlightedText
+                        text={row.amount}
+                        query={trimmedQuery}
+                        style={[styles.calcAmountInput, { color: textColor }]}
+                      />
+                    ) : (
+                      <TextInput
+                        placeholder="0"
+                        placeholderTextColor={placeholderColor}
+                        value={row.amount}
+                        onChangeText={(text) => updateCalculationRowAmount(row.id, text)}
+                        keyboardType="numeric"
+                        style={[styles.calcAmountInput, { color: textColor }]}
+                      />
+                    )}
                     {/* Extra left margin (beyond the row's own gap) is
                         deliberate: this sits right after the number input,
                         and a X too close to it invites an accidental tap
@@ -777,6 +1013,16 @@ export default function NoteScreen() {
                   <View style={styles.calcTotalSpacer} />
                 </View>
               </View>
+            ) : isSearching ? (
+              // RN's TextInput can't render styled/highlighted substrings
+              // while staying live-editable — its `value` is always plain
+              // text. So while actively searching, plain-text content swaps
+              // to this read-only Text with real per-match highlighting;
+              // clearing the search bar swaps the editable TextInput back.
+              // Item-based/calculation rows don't need this trade-off since
+              // highlighting a whole row's background doesn't require
+              // touching the row's own (still-editable) TextInputs.
+              <HighlightedText text={content} query={trimmedQuery} style={[styles.contentInput, { color: textColor }]} />
             ) : (
               <TextInput
                 placeholder="Write here…"
@@ -788,6 +1034,15 @@ export default function NoteScreen() {
               />
             )}
           </ScrollView>
+
+          {/* REQ-09: persistent search, pinned at the bottom, scoped to this
+              one open note. */}
+          <SearchBar
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search in this note"
+            resultCount={isSearching ? matchCount : undefined}
+          />
 
           {/* Metadata footer: always visible, doesn't scroll away with the content. */}
           <View style={styles.metaFooter}>
@@ -881,8 +1136,16 @@ const styles = StyleSheet.create({
   contentInput: { fontSize: 16, lineHeight: 22, flex: 1, minHeight: 200, textAlignVertical: 'top' },
   // Checklist / daily-schedule body.
   checklist: { gap: Spacing.one, marginTop: Spacing.one },
-  checklistRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  timeInput: { width: 52, fontSize: 14, fontVariant: ['tabular-nums'] },
+  // flex-start (not center): item text now wraps to multiple lines instead
+  // of running off the row's right edge, so the checkbox/time/remove button
+  // need to align with the *first* line, not the vertical center of however
+  // tall the wrapped text ends up being.
+  checklistRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
+  // A couple px of top margin nudges these back in line with the text's
+  // first line, since flex-start alone aligns their tops exactly, and a
+  // TextInput's own internal line-height leaves a little visual offset above
+  // its glyphs that these fixed-size elements don't have.
+  timeInput: { width: 52, fontSize: 14, fontVariant: ['tabular-nums'], marginTop: 2 },
   checkbox: {
     width: 22,
     height: 22,
@@ -890,22 +1153,38 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 2,
   },
   checkboxFill: { width: 12, height: 12, borderRadius: 3 },
   checklistInput: { flex: 1, fontSize: 16, paddingVertical: Spacing.one },
   checklistInputDone: { textDecorationLine: 'line-through', opacity: 0.6 },
+  // Matches checkbox/timeInput's marginTop, so a multi-line row's remove
+  // button aligns with its first line instead of drifting to the vertical
+  // center of the wrapped text.
+  rowRemoveButton: { marginTop: 2 },
   // Aligns under checklist item *text* (after the checkbox), not the row's
   // left edge — see addCalcRowButton below for why calculation needs its own.
   addItemRow: { paddingVertical: Spacing.two, paddingLeft: Spacing.five },
   // Daily schedule's "+ Add item" (top and bottom): flush with the row's own
   // left edge like the rest of the text, not indented under the checkbox.
   addItemRowFlush: { paddingVertical: Spacing.two, paddingLeft: Spacing.half },
-  // Calculation body.
-  calcRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  // Calculation body. flex-start for the same reason as checklistRow above —
+  // a wrapped multi-line description shouldn't vertically re-center the
+  // amount field and remove button away from its first line.
+  calcRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
   calcDescInput: { flex: 1, fontSize: 16, paddingVertical: Spacing.one },
   // paddingRight keeps the digits off the input's own edge, not just off the
   // X button — a flush-right number reads as cramped even with room after it.
-  calcAmountInput: { width: 80, fontSize: 16, paddingVertical: Spacing.one, textAlign: 'right', paddingRight: Spacing.one },
+  // marginTop nudges it back in line with the description's first line, same
+  // reasoning as checklistRow's checkbox/timeInput.
+  calcAmountInput: {
+    width: 80,
+    fontSize: 16,
+    paddingVertical: Spacing.one,
+    textAlign: 'right',
+    paddingRight: Spacing.one,
+    marginTop: 2,
+  },
   // A calculation row has no checkbox before its description (unlike
   // checklist/daily-schedule), so "+ Add row" aligns flush left instead of
   // indented like addItemRow.
@@ -915,7 +1194,7 @@ const styles = StyleSheet.create({
   addCalcRowButton: { flex: 1, paddingVertical: Spacing.two, paddingLeft: Spacing.half },
   // Extra margin on top of calcRow's own gap, so the X sits further from the
   // amount field than the row's other gaps — see the render-side comment.
-  calcRemoveButton: { marginLeft: Spacing.four },
+  calcRemoveButton: { marginLeft: Spacing.four, marginTop: 2 },
   calcDivider: { height: 1, marginTop: Spacing.one, marginBottom: Spacing.two },
   // Smaller gap than most rows (Spacing.half, not two) — the +/= label reads
   // as attached to its number, not a separate item next to it.
@@ -932,4 +1211,9 @@ const styles = StyleSheet.create({
   // (which is further right, past where the X buttons sit).
   calcTotalSpacer: { width: 16, marginLeft: Spacing.four },
   metaFooter: { paddingTop: Spacing.two, paddingBottom: Spacing.two, gap: Spacing.half },
+  // REQ-09 in-note search: applied per matched substring (via
+  // `HighlightedText`/`splitByQuery`), never a whole row/field — every
+  // searchable field swaps to this read-only, per-character-highlighted view
+  // while there's an active query (D-13).
+  searchMatchText: { backgroundColor: SEARCH_HIGHLIGHT_COLOR },
 });

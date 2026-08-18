@@ -7,6 +7,7 @@ import { Alert, FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions,
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { NoteRow } from '@/components/note-row';
+import { SearchBar } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { FOLDER_COLORS, Spacing } from '@/constants/theme';
@@ -14,7 +15,8 @@ import { useNotesStore } from '@/hooks/use-notes-store';
 import { useTheme } from '@/hooks/use-theme';
 import { useThemePreference } from '@/hooks/use-theme-preference';
 import { autoInkForColor, withAlpha } from '@/lib/appearance';
-import { Folder, FolderColor } from '@/lib/types';
+import { noteMatchesQuery } from '@/lib/search';
+import { Folder, FolderColor, Note } from '@/lib/types';
 
 // Sentinel id for the always-visible "add category" tile appended to the grid.
 const ADD_CATEGORY_TILE_ID = '__add-category-tile__';
@@ -25,7 +27,7 @@ type GridItem = (Folder & { kind: 'folder' }) | { id: string; kind: 'add-categor
 
 export default function FoldersScreen() {
   const router = useRouter();
-  const { folders, notesInFolder, uncategorizedNotes, createFolder, createNote, moveNote, deleteNote } =
+  const { folders, notes, getFolder, notesInFolder, uncategorizedNotes, createFolder, createNote, moveNote, deleteNote } =
     useNotesStore();
   // Theme text color doubles as the swatch-selection ring and the outlined
   // "add" tiles' border/text: white in dark mode, dark in light mode, so it's
@@ -54,6 +56,15 @@ export default function FoldersScreen() {
   const [isAdding, setIsAdding] = useState(false);
   const [name, setName] = useState('');
   const [color, setColor] = useState<FolderColor>(FOLDER_COLORS[0]);
+  // REQ-09 (text search; voice deferred, D-03/D-12): a persistent search bar
+  // pinned at the bottom. While it has a query, it replaces the folder grid
+  // with a flat, app-wide list of matching notes — search here is meant to
+  // find a note regardless of which folder it's filed under.
+  const [searchQuery, setSearchQuery] = useState('');
+  const isSearching = searchQuery.trim().length > 0;
+  const searchResults = isSearching
+    ? notes.filter((n) => noteMatchesQuery(n, searchQuery)).sort((a, b) => b.updatedAt - a.updatedAt)
+    : [];
 
   // Validate, create the folder, reset the draft, and jump straight into it.
   function handleCreate() {
@@ -81,6 +92,20 @@ export default function FoldersScreen() {
     Alert.alert('Note', undefined, [
       ...moveOptions,
       { text: 'Delete', style: 'destructive', onPress: () => deleteNote(noteId) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
+  // Long-press menu for a search result: it could be filed in any folder (or
+  // none), so exclude only its own current folder from the "move to" list —
+  // same shape as handleUnsortedNoteOptions/handleNoteOptions elsewhere.
+  function handleSearchResultOptions(note: Note) {
+    const moveOptions = folders
+      .filter((f) => f.id !== note.folderId)
+      .map((f) => ({ text: `Move to "${f.name}"`, onPress: () => moveNote(note.id, f.id) }));
+    Alert.alert(note.title.trim() || 'Note', undefined, [
+      ...moveOptions,
+      { text: 'Delete', style: 'destructive', onPress: () => deleteNote(note.id) },
       { text: 'Cancel', style: 'cancel' },
     ]);
   }
@@ -170,74 +195,111 @@ export default function FoldersScreen() {
           </ThemedView>
         )}
 
-        {/* Folder grid, two per row, followed by the "add category" tile.
-            Below the grid (as the FlatList footer, so it isn't split into
-            columns): the "Unsorted" section — an always-visible, full-width
-            "Add new note" tile, then any unsorted notes below it. */}
-        <FlatList
-          data={gridData}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          columnWrapperStyle={styles.row}
-          contentContainerStyle={styles.list}
-          renderItem={({ item }) => {
-            if (item.kind === 'add-category') {
+        {/* While searching, the grid/unsorted view is replaced entirely by a
+            flat, app-wide list of matches — search is meant to find a note
+            regardless of which folder (if any) it's filed under, not to
+            filter the grid itself. */}
+        {isSearching ? (
+          // Distinct `key` from the grid FlatList below: without it, React
+          // reuses the same underlying FlatList instance across the ternary
+          // swap (same component type, same position in the tree) and just
+          // diffs its numColumns prop from 2 to undefined — which FlatList
+          // explicitly doesn't support changing on an existing instance and
+          // throws for. A different key forces a real unmount/remount.
+          <FlatList
+            key="search-results"
+            data={searchResults}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.list}
+            renderItem={({ item }) => (
+              <NoteRow
+                note={item}
+                accentColor={getFolder(item.folderId ?? '')?.color}
+                onPress={() => router.push(`/note/${item.id}`)}
+                onLongPress={() => handleSearchResultOptions(item)}
+              />
+            )}
+            ListEmptyComponent={
+              <ThemedText themeColor="textSecondary" style={styles.emptySearch}>
+                No notes found.
+              </ThemedText>
+            }
+          />
+        ) : (
+          // Folder grid, two per row, followed by the "add category" tile.
+          // Below the grid (as the FlatList footer, so it isn't split into
+          // columns): the "Unsorted" section — an always-visible, full-width
+          // "Add new note" tile, then any unsorted notes below it.
+          <FlatList
+            key="grid"
+            data={gridData}
+            keyExtractor={(item) => item.id}
+            numColumns={2}
+            columnWrapperStyle={styles.row}
+            contentContainerStyle={styles.list}
+            renderItem={({ item }) => {
+              if (item.kind === 'add-category') {
+                return (
+                  // Borderless "ghost" tile — same fill as the panel
+                  // background (ghostFill) so it reads as an empty slot, not
+                  // a bordered box.
+                  <Pressable
+                    style={[styles.folderCard, styles.ghostTile, { width: cardWidth, backgroundColor: ghostFill }]}
+                    onPress={() => setIsAdding(true)}>
+                    <FolderPen size={30} color={theme.text} />
+                    <ThemedText type="small" style={{ color: theme.text }}>
+                      Add new category
+                    </ThemedText>
+                  </Pressable>
+                );
+              }
+              // Auto-contrast the card text against the folder color so it
+              // stays readable on any tone (same rule the notes use).
+              const ink = autoInkForColor(item.color);
+              const count = notesInFolder(item.id).length;
               return (
-                // Borderless "ghost" tile — same fill as the panel background
-                // (ghostFill) so it reads as an empty slot, not a bordered box.
                 <Pressable
-                  style={[styles.folderCard, styles.ghostTile, { width: cardWidth, backgroundColor: ghostFill }]}
-                  onPress={() => setIsAdding(true)}>
-                  <FolderPen size={30} color={theme.text} />
-                  <ThemedText type="small" style={{ color: theme.text }}>
-                    Add new category
+                  style={[styles.folderCard, { width: cardWidth, backgroundColor: item.color }]}
+                  onPress={() => router.push(`/folder/${item.id}`)}>
+                  <ThemedText type="default" style={[styles.folderName, { color: ink }]}>
+                    {item.name}
+                  </ThemedText>
+                  <ThemedText type="small" style={{ color: withAlpha(ink, 0.85) }}>
+                    {count} {count === 1 ? 'note' : 'notes'}
                   </ThemedText>
                 </Pressable>
               );
+            }}
+            ListFooterComponent={
+              <View style={styles.unsortedSection}>
+                <ThemedText type="smallBold" themeColor="textSecondary" style={styles.unsortedLabel}>
+                  Unsorted notes
+                </ThemedText>
+                {/* Full-width ghost tile, same shape as a note row — always
+                    visible here, above any existing unsorted notes. */}
+                <Pressable
+                  style={[styles.unsortedAddTile, { backgroundColor: ghostFill }]}
+                  onPress={handleCreateUnsortedNote}>
+                  <NotepadText size={22} color={theme.text} />
+                  <ThemedText type="small" style={{ color: theme.text }}>
+                    Add new note
+                  </ThemedText>
+                </Pressable>
+                {unsorted.map((n) => (
+                  <NoteRow
+                    key={n.id}
+                    note={n}
+                    onPress={() => router.push(`/note/${n.id}`)}
+                    onLongPress={() => handleUnsortedNoteOptions(n.id)}
+                  />
+                ))}
+              </View>
             }
-            // Auto-contrast the card text against the folder color so it stays
-            // readable on any tone (same rule the notes use).
-            const ink = autoInkForColor(item.color);
-            const count = notesInFolder(item.id).length;
-            return (
-              <Pressable
-                style={[styles.folderCard, { width: cardWidth, backgroundColor: item.color }]}
-                onPress={() => router.push(`/folder/${item.id}`)}>
-                <ThemedText type="default" style={[styles.folderName, { color: ink }]}>
-                  {item.name}
-                </ThemedText>
-                <ThemedText type="small" style={{ color: withAlpha(ink, 0.85) }}>
-                  {count} {count === 1 ? 'note' : 'notes'}
-                </ThemedText>
-              </Pressable>
-            );
-          }}
-          ListFooterComponent={
-            <View style={styles.unsortedSection}>
-              <ThemedText type="smallBold" themeColor="textSecondary" style={styles.unsortedLabel}>
-                Unsorted notes
-              </ThemedText>
-              {/* Full-width ghost tile, same shape as a note row — always
-                  visible here, above any existing unsorted notes. */}
-              <Pressable
-                style={[styles.unsortedAddTile, { backgroundColor: ghostFill }]}
-                onPress={handleCreateUnsortedNote}>
-                <NotepadText size={22} color={theme.text} />
-                <ThemedText type="small" style={{ color: theme.text }}>
-                  Add new note
-                </ThemedText>
-              </Pressable>
-              {unsorted.map((n) => (
-                <NoteRow
-                  key={n.id}
-                  note={n}
-                  onPress={() => router.push(`/note/${n.id}`)}
-                  onLongPress={() => handleUnsortedNoteOptions(n.id)}
-                />
-              ))}
-            </View>
-          }
-        />
+          />
+        )}
+
+        {/* REQ-09: persistent search, pinned at the bottom of the screen. */}
+        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search notes" />
       </SafeAreaView>
     </ThemedView>
   );
@@ -313,4 +375,5 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
     alignItems: 'center',
   },
+  emptySearch: { textAlign: 'center', marginTop: Spacing.six },
 });
