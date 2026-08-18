@@ -68,7 +68,8 @@ type NotesStore = {
   // Replaces a calculation note's entire row list, same pattern.
   updateCalculationRows: (id: string, rows: CalculationRow[]) => void;
   deleteNote: (id: string) => void;
-  moveNote: (id: string, folderId: string) => void;
+  // Pass undefined to move the note back to Unsorted.
+  moveNote: (id: string, folderId: string | undefined) => void;
   getNote: (id: string) => Note | undefined;
   getFolder: (id: string) => Folder | undefined;
 };

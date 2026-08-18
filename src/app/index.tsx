@@ -3,9 +3,10 @@
 import { Stack, useRouter } from 'expo-router';
 import { FolderPen, LayoutGrid, Moon, NotepadText, Sun } from 'lucide-react-native';
 import { useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { NoteOptionsPanel } from '@/components/note-options-panel';
 import { NoteRow } from '@/components/note-row';
 import { SearchBar } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
@@ -57,7 +58,7 @@ export default function FoldersScreen() {
   const [name, setName] = useState('');
   const [color, setColor] = useState<FolderColor>(FOLDER_COLORS[0]);
   // REQ-09 (text search; voice deferred, D-03/D-12): a persistent search bar
-  // pinned at the bottom. While it has a query, it replaces the folder grid
+  // pinned at the top. While it has a query, it replaces the folder grid
   // with a flat, app-wide list of matching notes — search here is meant to
   // find a note regardless of which folder it's filed under.
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,6 +66,9 @@ export default function FoldersScreen() {
   const searchResults = isSearching
     ? notes.filter((n) => noteMatchesQuery(n, searchQuery)).sort((a, b) => b.updatedAt - a.updatedAt)
     : [];
+  // Which note's long-press "Note" options panel (move/delete) is open, if
+  // any — shared by the Unsorted section and the search-results list below.
+  const [activeNote, setActiveNote] = useState<Note | null>(null);
 
   // Validate, create the folder, reset the draft, and jump straight into it.
   function handleCreate() {
@@ -81,33 +85,6 @@ export default function FoldersScreen() {
   function handleCreateUnsortedNote() {
     const note = createNote();
     router.push(`/note/${note.id}`);
-  }
-
-  // Long-press menu for an unsorted note: file it into any folder, or delete it.
-  function handleUnsortedNoteOptions(noteId: string) {
-    const moveOptions = folders.map((f) => ({
-      text: `Move to "${f.name}"`,
-      onPress: () => moveNote(noteId, f.id),
-    }));
-    Alert.alert('Note', undefined, [
-      ...moveOptions,
-      { text: 'Delete', style: 'destructive', onPress: () => deleteNote(noteId) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }
-
-  // Long-press menu for a search result: it could be filed in any folder (or
-  // none), so exclude only its own current folder from the "move to" list —
-  // same shape as handleUnsortedNoteOptions/handleNoteOptions elsewhere.
-  function handleSearchResultOptions(note: Note) {
-    const moveOptions = folders
-      .filter((f) => f.id !== note.folderId)
-      .map((f) => ({ text: `Move to "${f.name}"`, onPress: () => moveNote(note.id, f.id) }));
-    Alert.alert(note.title.trim() || 'Note', undefined, [
-      ...moveOptions,
-      { text: 'Delete', style: 'destructive', onPress: () => deleteNote(note.id) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
   }
 
   const unsorted = uncategorizedNotes();
@@ -156,6 +133,30 @@ export default function FoldersScreen() {
         }}
       />
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
+        {/* REQ-09: persistent search, pinned at the top so it's never covered
+            by the on-screen keyboard and is reachable without scrolling past
+            the folder grid first. */}
+        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search notes" />
+        {/* Long-press "Note" options (Unsorted section and search results
+            below): move to a category (or, for a note already in one, back
+            to Unsorted), or delete. Shared component — see
+            note-options-panel.tsx for why this replaced an Alert.alert here. */}
+        {activeNote && (
+          <NoteOptionsPanel
+            key={activeNote.id}
+            currentFolderId={activeNote.folderId}
+            folders={folders}
+            onClose={() => setActiveNote(null)}
+            onMove={(folderId) => {
+              moveNote(activeNote.id, folderId);
+              setActiveNote(null);
+            }}
+            onDelete={() => {
+              deleteNote(activeNote.id);
+              setActiveNote(null);
+            }}
+          />
+        )}
         {/* Add-category panel, opened by tapping the grid tile. Placed above
             the grid (rather than at the bottom of the screen) so the on-screen
             keyboard never covers the name field or color picker. */}
@@ -216,7 +217,7 @@ export default function FoldersScreen() {
                 note={item}
                 accentColor={getFolder(item.folderId ?? '')?.color}
                 onPress={() => router.push(`/note/${item.id}`)}
-                onLongPress={() => handleSearchResultOptions(item)}
+                onLongPress={() => setActiveNote(item)}
               />
             )}
             ListEmptyComponent={
@@ -290,16 +291,13 @@ export default function FoldersScreen() {
                     key={n.id}
                     note={n}
                     onPress={() => router.push(`/note/${n.id}`)}
-                    onLongPress={() => handleUnsortedNoteOptions(n.id)}
+                    onLongPress={() => setActiveNote(n)}
                   />
                 ))}
               </View>
             }
           />
         )}
-
-        {/* REQ-09: persistent search, pinned at the bottom of the screen. */}
-        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search notes" />
       </SafeAreaView>
     </ThemedView>
   );

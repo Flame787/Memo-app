@@ -1,11 +1,9 @@
 // Persistent search input (REQ-09 — text search; voice search stays
 // deferred, D-03/D-12), shared by the homepage, folder screen, and note
-// editor so all three "look" like the same feature. A normal flex child
-// placed as the last sibling in a screen's column layout, not
-// `position: absolute` — a flex column's last child already lands right
-// after the space its scrollable sibling doesn't use, which reads as
-// "pinned at the bottom" without needing z-index or keyboard-avoiding
-// workarounds an absolutely-positioned bar would.
+// editor so all three "look" like the same feature. Pinned near the top of
+// each screen (above the list/grid it filters, or below the note editor's
+// folder/type chips) rather than at the bottom — a bottom-pinned bar was
+// covered by the on-screen keyboard while typing a query.
 import { Search, X } from 'lucide-react-native';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 

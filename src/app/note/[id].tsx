@@ -365,6 +365,11 @@ export default function NoteScreen() {
   // platform) reports the real content height so this can be applied as an
   // explicit style on both, making the two platforms behave the same way.
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
+  // Sum/Costs: id of a just-added row whose description field should receive
+  // focus once it mounts, so the cursor lands there instead of the user
+  // having to tap the new row manually after "+ Add row".
+  const [pendingFocusRowId, setPendingFocusRowId] = useState<string | null>(null);
+  const calcDescRefs = useRef<Record<string, TextInput | null>>({});
   const folder = getFolder(note?.folderId ?? ''); // folder chip shown at the top
 
   // Appearance is read live from the store (not local state) so a pick in the
@@ -584,8 +589,18 @@ export default function NoteScreen() {
   // --- Calculation row mutators: same local-state-first, debounce-autosaved
   // pattern as the item mutators above. ---
   function addCalculationRow() {
-    setCalcRows((prev) => [...prev, { id: makeId(), description: '', amount: '' }]);
+    const rowId = makeId();
+    setCalcRows((prev) => [...prev, { id: rowId, description: '', amount: '' }]);
+    setPendingFocusRowId(rowId);
   }
+
+  // Focuses a just-added calculation row's description field once it has
+  // mounted (the ref below is only set after this render commits).
+  useEffect(() => {
+    if (!pendingFocusRowId) return;
+    calcDescRefs.current[pendingFocusRowId]?.focus();
+    setPendingFocusRowId(null);
+  }, [pendingFocusRowId]);
   function updateCalculationRowDescription(rowId: string, description: string) {
     setCalcRows((prev) => prev.map((row) => (row.id === rowId ? { ...row, description } : row)));
   }
@@ -684,6 +699,17 @@ export default function NoteScreen() {
             </Pressable>
           </View>
 
+          {/* REQ-09: persistent search, scoped to this one open note. Sits
+              directly below the folder/type chips and above the title, so
+              the on-screen keyboard never covers it (it did when this was
+              pinned at the bottom instead). */}
+          <SearchBar
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search in this note"
+            resultCount={isSearching ? matchCount : undefined}
+          />
+
           {/* Delete-note panel: same style as every other panel here (not
               Alert.alert), closable via the ✕, with a red trash-can icon
               ahead of the actual "Delete note" action so it reads as
@@ -721,24 +747,42 @@ export default function NoteScreen() {
                   <X size={18} color={theme.text} />
                 </Pressable>
               </View>
-              {folders
-                .filter((f) => f.id !== note.folderId)
-                .map((f) => (
+              {/* Capped height + scroll rather than an unbounded list — past
+                  a handful of categories this would otherwise push the note
+                  title/content off-screen. */}
+              <ScrollView style={styles.moveOptionsScroll} showsVerticalScrollIndicator={false}>
+                {folders
+                  .filter((f) => f.id !== note.folderId)
+                  .map((f) => (
+                    <Pressable
+                      key={f.id}
+                      onPress={() => {
+                        moveNote(id, f.id);
+                        setShowMovePicker(false);
+                      }}
+                      style={styles.typeOptionRow}>
+                      <ThemedText type="small">{f.name}</ThemedText>
+                    </Pressable>
+                  ))}
+                {/* Always last, and only offered when the note is currently
+                    in a folder — moving an already-unsorted note "to
+                    Unsorted" is a no-op. */}
+                {note.folderId !== undefined && (
                   <Pressable
-                    key={f.id}
                     onPress={() => {
-                      moveNote(id, f.id);
+                      moveNote(id, undefined);
                       setShowMovePicker(false);
                     }}
                     style={styles.typeOptionRow}>
-                    <ThemedText type="small">{f.name}</ThemedText>
+                    <ThemedText type="small">Move to Unsorted notes</ThemedText>
                   </Pressable>
-                ))}
-              {folders.filter((f) => f.id !== note.folderId).length === 0 && (
-                <ThemedText type="small" themeColor="textSecondary">
-                  No other categories yet.
-                </ThemedText>
-              )}
+                )}
+                {folders.filter((f) => f.id !== note.folderId).length === 0 && note.folderId === undefined && (
+                  <ThemedText type="small" themeColor="textSecondary">
+                    No other categories yet.
+                  </ThemedText>
+                )}
+              </ScrollView>
             </ThemedView>
           )}
 
@@ -938,6 +982,9 @@ export default function NoteScreen() {
                       />
                     ) : (
                       <TextInput
+                        ref={(el) => {
+                          calcDescRefs.current[row.id] = el;
+                        }}
                         placeholder="Description"
                         placeholderTextColor={placeholderColor}
                         value={row.description}
@@ -1035,15 +1082,6 @@ export default function NoteScreen() {
             )}
           </ScrollView>
 
-          {/* REQ-09: persistent search, pinned at the bottom, scoped to this
-              one open note. */}
-          <SearchBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search in this note"
-            resultCount={isSearching ? matchCount : undefined}
-          />
-
           {/* Metadata footer: always visible, doesn't scroll away with the content. */}
           <View style={styles.metaFooter}>
             <ThemedText type="small" style={{ color: withAlpha(textColor, 0.5) }}>
@@ -1099,6 +1137,9 @@ const styles = StyleSheet.create({
   },
   panelLabel: { marginBottom: Spacing.half },
   panelHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  // Roughly 3 rows tall before the "Move to folder" list scrolls — matches
+  // note-options-panel.tsx's cap for the same reason (see there).
+  moveOptionsScroll: { maxHeight: 3 * 44 },
   typeOptionRow: {
     flexDirection: 'row',
     alignItems: 'center',

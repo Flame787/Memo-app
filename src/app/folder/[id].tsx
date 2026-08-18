@@ -5,7 +5,6 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { CircleAlert, Folder as FolderIcon, NotepadText, Pencil, Trash2, X } from "lucide-react-native";
 import { useState } from "react";
 import {
-  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -15,6 +14,7 @@ import {
 // for the rename/recolor panel, the note list, and the "Add new note" tile
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { NoteOptionsPanel } from "@/components/note-options-panel"; // shared Move to/Delete menu for a single note row
 import { NoteRow } from "@/components/note-row"; // row background and text auto-contrasted against it. Shared by the folder screen's note list and the home screen's "unsorted notes" list, so both stay visually and behaviorally identical.
 import { SearchBar } from "@/components/search-bar"; // REQ-09 persistent search bar, shared with the homepage and note editor
 import { ThemedText } from "@/components/themed-text";
@@ -25,7 +25,7 @@ import { useTheme } from "@/hooks/use-theme"; // hook to get the current theme c
 import { useThemePreference } from "@/hooks/use-theme-preference"; // hook to get the user's system theme preference (light/dark) so we can adjust the ghost tile background color accordingly
 import { withAlpha } from "@/lib/appearance"; // dims a theme color for placeholder text
 import { noteMatchesQuery } from "@/lib/search"; // REQ-09 shared match logic
-import { FolderColor } from "@/lib/types"; // type for the fixed palette of folder colors, used in the color picker and stored in the database
+import { FolderColor, Note } from "@/lib/types"; // type for the fixed palette of folder colors, used in the color picker and stored in the database
 
 export default function FolderScreen() {
   // Get the folder id from the URL, and the global notes/folders store.
@@ -66,6 +66,8 @@ export default function FolderScreen() {
   // "Delete this category?" confirmation panel toggle (replaces Alert.alert
   // so it matches the rest of the app's in-app panel look).
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Which note's long-press "Note" options panel (move/delete) is open, if any.
+  const [activeNote, setActiveNote] = useState<Note | null>(null);
 
   // Open the edit panel pre-filled with the folder's current name/color.
   function startEditing() {
@@ -86,24 +88,6 @@ export default function FolderScreen() {
   function handleCreateNote() {
     const note = createNote(id);
     router.push(`/note/${note.id}`);
-  }
-
-  // Long-press menu for a single note: move to any other folder, or delete.
-  function handleNoteOptions(noteId: string) {
-    const otherFolders = folders.filter((f) => f.id !== id); // can't move into the current folder
-    const moveOptions = otherFolders.map((f) => ({
-      text: `Move to "${f.name}"`,
-      onPress: () => moveNote(noteId, f.id),
-    }));
-    Alert.alert("Note", undefined, [
-      ...moveOptions,
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => deleteNote(noteId),
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
   }
 
   // Actually delete the folder, called from the confirmation panel below.
@@ -134,6 +118,10 @@ export default function FolderScreen() {
         }}
       />
       <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+        {/* REQ-09: persistent search, pinned at the top so it's never covered
+            by the on-screen keyboard and is reachable without scrolling past
+            the note list first. */}
+        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search in this category" />
         {/* Folder options panel: same style as note/[id].tsx's panels (not
             Alert.alert — this app now uses one consistent in-editor panel
             look for every menu instead of the OS action-sheet style), with
@@ -249,6 +237,25 @@ export default function FolderScreen() {
             </View>
           </ThemedView>
         )}
+        {/* Long-press "Note" options: move to another category (or Unsorted),
+            or delete. Shared component — see note-options-panel.tsx for why
+            this replaced an Alert.alert here. */}
+        {activeNote && (
+          <NoteOptionsPanel
+            key={activeNote.id}
+            currentFolderId={activeNote.folderId}
+            folders={folders}
+            onClose={() => setActiveNote(null)}
+            onMove={(folderId) => {
+              moveNote(activeNote.id, folderId);
+              setActiveNote(null);
+            }}
+            onDelete={() => {
+              deleteNote(activeNote.id);
+              setActiveNote(null);
+            }}
+          />
+        )}
         <FlatList
           data={displayedNotes}
           keyExtractor={(item) => item.id}
@@ -258,7 +265,7 @@ export default function FolderScreen() {
               note={item}
               accentColor={folder?.color}
               onPress={() => router.push(`/note/${item.id}`)}
-              onLongPress={() => handleNoteOptions(item.id)}
+              onLongPress={() => setActiveNote(item)}
             />
           )}
           ListEmptyComponent={
@@ -282,10 +289,6 @@ export default function FolderScreen() {
             </Pressable>
           }
         />
-
-        {/* REQ-09: persistent search, pinned at the bottom, scoped to this
-            folder's own notes. */}
-        <SearchBar value={searchQuery} onChangeText={setSearchQuery} placeholder="Search in this category" />
       </SafeAreaView>
     </ThemedView>
   );
